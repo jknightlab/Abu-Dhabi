@@ -1,0 +1,243 @@
+###Abu Dhabi Ethnic Global SNP chip data
+Samples went to core in 2 batches:
+1st batch: 480 samples (P160466)
+2nd batch: 256 samples (P160577)
+Data from core
+The data was returned in multiple file formats.  The main file was the FinalReport file which contained one line per genotype (ie one line for one SNP in one individual).
+Neil
+The FinalReport files were formatted by Neil into plink format.  
+Make ped and fam files from the bed files from Neil:
+/apps/well/plink/1.90b2n/plink --bfile P160577–recode P160577
+/apps/well/plink/1.90b2n/plink --bfile P160466 –recode P160466
+Merge these files together:
+/apps/well/plink/1.90b2n/plink \
+--file P160466/P160466 \
+--merge P160577/P160577.ped P160577/P160577.map \
+--recode --out AD_736_multi_ethnic_chip
+
+This was then processed through Will’s strand program to put C/G and A/T SNPs onto the correct strands. The strand program was downloaded from:
+http://www.well.ox.ac.uk/~wrayner/strand/
+Impose family structure on data
+After that, Lawrence updated the fam file to include the parents.  This was then used to update the ped file using the following command:
+/apps/well/plink/1.90b2n/plink –file \
+AD_736_multi_ethnic_chip_update_strand --update-parents \
+AD_736_multi_ethnic_chip_update_strand_ped.txt --recode --out \
+AD_736_multi_ethnic_chip_update_strand_parents
+
+The family IDs also needed updating as follows:
+/apps/well/plink/1.90b2n/plink --file \
+AD_736_multi_ethnic_chip_update_strand_parents --update-ids \
+FID_info_update.txt --recode –-out \
+AD_736_multi_ethnic_chip_update_strand_FID
+
+Update the sex codes:
+/apps/well/plink/1.90b2n/plink --file \
+AD_736_multi_ethnic_chip_update_strand_FID --update-sex \
+sex_info_update.txt --recode –-out \
+AD_736_multi_ethnic_chip_update_strand_ped
+
+Mendel errors
+Check for mendel errors:
+/apps/well/plink/1.90b2n/plink --file \ AD_736_multi_ethnic_chip_update_strand_ped --mendel
+
+ 
+
+All individuals pass on standard pass rate of 5%.
+Look at rate of mendel errors per SNP – highest is 17 mendel errors, so these all pass too.
+ 
+Missingness
+
+Run this command to obtain a file of the missingness per SNP:
+/apps/well/plink/1.90b2n/plink \
+--file AD_736_multi_ethnic_chip_update_strand_ped \
+-–missing
+
+This produces a missingness file which can be used to count failing SNPs as follows:
+cat plink.lmiss |  tr -s ' ' | awk -F " " '{ if ( $5 > 0.05 ) print $0 }' | wc -l
+Using a threshold of 0.05 for pass rate 27,244 SNPs fail
+Make a file of the SNPs to use for exclusion:
+cat plink.lmiss |  tr -s ' ' | awk -F " " '{ if ( $5 > 0.05 ) print $0 }' | cut -d " " -f3 > missingness_failing_SNPs.txt
+
+Exclude the SNPs:
+/apps/well/plink/1.90b2n/plink \
+--file AD_736_multi_ethnic_chip_update_strand_ped \
+--exclude missingness_failing_SNPs.txt \
+--recode –out AD_736_multi_ethnic_chip_update_strand_ped_no_missing
+
+Hardy Weinberg
+Look at the Hardy-Weinberg equilibrium for the SNPs
+/apps/well/plink/1.90b2n/plink \
+--file AD_736_multi_ethnic_chip_update_strand_ped_no_missing \
+--hardy –out AD_736_multi_ethnic_chip_update_strand_ped_no_missing
+
+13,843 SNPs were p-value < 0.00001.  Of these, 178 were due to excess heterozygosity and 13,665 were due to excess homozygosity.  It is unclear whether this is a reflection of consanguinity in the Abu Dhabi population without comparing to another population – eg European.
+Remove monomorphic SNPs
+cat plink.hwe |  tr -s ' ' | grep "0/0/" | \
+cut -d " " -f3 > monomorphic_SNP_list.txt
+
+/apps/well/plink/1.90b2n/plink \
+--file AD_736_multi_ethnic_chip_update_strand_ped_no_missing \
+--exclude monomorphic_SNP_list.txt \
+--recode -out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono
+
+Prepare files for MDS
+LD prune
+/apps/well/plink/1.90b2n/plink \
+--file AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono \
+--indep-pairwise 50 5 0.2 --maf 0.1 --1 --allow-no-sex \
+--noweb --out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono
+
+Exclude the pruned out SNPs
+/apps/well/plink/1.90b2n/plink --file \
+AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono \
+--exclude AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono.prune.out \
+--allow-no-sex --noweb \
+--out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned
+
+Remove regions of high LD
+/apps/well/plink/1.90b2n/plink --file \
+AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned \
+--exclude /well/jknight/kate/exomes/plink/AD_MDS/high-LD-regions-updated-b37.txt --range --noweb --recode --out \
+AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD
+
+Remove trio probands
+This leaves the parents in which should be the equivalent of founders.
+/apps/well/plink/1.90b2n/plink --file \
+AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD \
+--remove trio_probands.txt \
+--recode --out \
+AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders
+
+Make PCAs
+
+
+Check bim script from Will
+Before merging with 1000G data to carry out PCA analysis, check the SNPs to see that the alleles match 1000G.  Remove SNPs with non-matching alleles and phase palindromic SNPs maf<0.4.
+Will’s check bim script was downloaded from here:
+http://www.well.ox.ac.uk/~wrayner/tools/HRC-1000G-check-bim.v4.2.5.zip
+
+Also download:
+http://www.well.ox.ac.uk/~wrayner/tools/1000GP_Phase3_combined.legend.gz
+
+Make a bim file using this plink command:
+/apps/well/plink/1.90b2n/plink --file \
+AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders \
+--make-bed --out \
+AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders
+
+Create a freq file as follows:
+/apps/well/plink/1.90b2n/plink --file \
+AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders \
+--freq --out \
+AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders
+
+Run the script using this command:
+perl HRC-1000G-check-bim.pl -b \
+AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders.bim \
+-g 1000GP_Phase3_combined.legend -f \ AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders.frq
+
+Will’s script then makes a plink bash script to produce filtered files for each chr.  I modified this to make a single file across all chromosomes.  These are the commands which were run:
+/apps/well/plink/1.90b2n/plink --bfile AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders --exclude Exclude-AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-1000G.txt --make-bed --out TEMP1
+
+/apps/well/plink/1.90b2n/plink --bfile TEMP1 --update-map Chromosome-AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-1000G.txt --update-chr --make-bed --out TEMP2
+
+/apps/well/plink/1.90b2n/plink --bfile TEMP2 --update-map Position-AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-1000G.txt --make-bed --out TEMP3
+
+/apps/well/plink/1.90b2n/plink --bfile TEMP3 --flip Strand-Flip-AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-1000G.txt --make-bed --out TEMP4
+
+/apps/well/plink/1.90b2n/plink --bfile TEMP4 --reference-allele Force-Allele1-AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-1000G.txt --make-bed --out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-updated
+
+/apps/well/plink/1.90b2n/plink --bfile AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-updated --reference-allele Force-Allele1-AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-1000G.txt --make-bed --out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-updated-all_chrs
+
+PCA file overlap prep
+Now find the common set of SNPs between the 1000G data set and the corrected AD dataset to use for PCA analysis.
+/apps/well/plink/1.90b2n/plink --bfile AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-updated-all_chrs --write-snplist --out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-updated-all_chrs
+
+This produced the file:
+AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-updated-all_chrs.snplist
+which contains 801,654 SNPs
+Sort this file as follows:
+cat AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-updated-all_chrs.snplist | sort > AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-updated-all_chrs.sorted.snplist
+
+Find the 1000G sorted snplist:
+/well/jknight/kate/exomes/1000G/phase3_all_SNPs_list.sorted.txt
+This contains 84,739,838 SNPs
+Make a common SNP list between the two using this bash command (it is important that the input files be sorted for this command to work):
+comm -1 -2 AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-updated-all_chrs.sorted.snplist ../exomes/1000G/phase3_all_SNPs_list.sorted.txt > AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-updated-all_chrs_1000G_overlap.snplist
+
+-1 means exclude SNPs unique to the first file  
+-2 means exclude SNPs unique to the second file  
+check that the snp list lengths are as expected:
+cat AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-updated-all_chrs.sorted.snplist | wc -l
+801654
+cat ../exomes/1000G/phase3_all_SNPs_list.sorted.txt | wc -l
+84739838
+cat AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-updated-all_chrs_1000G_overlap.snplist | wc -l
+387788
+Preparing 1000G files
+To get the 1000G data ready for merging with AD, had to extract the common SNP list from the 1000G vcf files and convert into plink format.  Had problems with chr8, so excluded in the interests of time - the rest of the genome should be enough for the purposes of PCA.
+Merged all the 1000G chromosome files together and then tried to merge with the AD data and had problems with incompatible SNPs.  Processed 1000G data through the check bim script as follows:
+/apps/well/plink/1.90b2n/plink --bfile all_chr_1000G_phase3_AD_chip_intersect_SNP_set --exclude Exclude-all_chr_1000G_phase3_AD_chip_intersect_SNP_set-1000G.txt --make-bed --out TEMP1
+
+/apps/well/plink/1.90b2n/plink --bfile TEMP1 --update-map Chromosome-all_chr_1000G_phase3_AD_chip_intersect_SNP_set-1000G.txt --update-chr --make-bed --out TEMP2
+
+/apps/well/plink/1.90b2n/plink --bfile TEMP2 --update-map Position-all_chr_1000G_phase3_AD_chip_intersect_SNP_set-1000G.txt --make-bed --out TEMP3
+
+/apps/well/plink/1.90b2n/plink --bfile TEMP3 --flip Strand-Flip-all_chr_1000G_phase3_AD_chip_intersect_SNP_set-1000G.txt --make-bed --out TEMP4
+
+/apps/well/plink/1.90b2n/plink --bfile TEMP4 --reference-allele Force-Allele1-all_chr_1000G_phase3_AD_chip_intersect_SNP_set-1000G.txt --make-bed --out all_chr_1000G_phase3_AD_chip_intersect_SNP_set-updated
+
+/apps/well/plink/1.90b2n/plink --bfile all_chr_1000G_phase3_AD_chip_intersect_SNP_set-updated --reference-allele Force-Allele1-all_chr_1000G_phase3_AD_chip_intersect_SNP_set-1000G.txt --make-bed --out all_chr_1000G_phase3_AD_chip_intersect_SNP_set-updated-all_chrs
+
+Merged the AD and 1000G datasets:
+/apps/well/plink/1.90b2n/plink --file AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_pruned_exHiLD_founders-updated-all_chrs --merge all_chr_1000G_phase3_AD_chip_intersect_SNP_set-updated-all_chrs.ped all_chr_1000G_phase3_AD_chip_intersect_SNP_set-updated-all_chrs.map --recode --allow-no-sex --out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge
+Can now run the usual PCA processing steps:
+Make a pruned set of the SNPs:
+/apps/well/plink/1.90b2n/plink --file AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge --indep-pairwise 50 5 0.2 --maf 0.1 --1 --allow-no-sex --noweb --out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge
+
+Apply the pruning:
+/apps/well/plink/1.90b2n/plink --file AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge --exclude AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge.prune.out --allow-no-sex --noweb --recode --out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_pruned
+
+Remove regions of high LD
+/apps/well/plink/1.90b2n/plink --file \
+AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_pruned \
+--exclude /well/jknight/kate/exomes/plink/AD_MDS/high-LD-regions-updated-b37.txt --range --noweb --recode --out \
+AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_pruned_exHiLD
+
+Make sure trio probands are excluded:
+/apps/well/plink/1.90b2n/plink --file \
+AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_pruned_exHiLD \
+--remove trio_probands.txt \
+--recode --out \
+AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_pruned_exHiLD_founders
+
+Run PCA (Note!! – looks like this was run on the wrong file – probands NOT removed)
+/apps/well/plink/1.90b2n/plink --file AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_pruned_exHiLD  --pca --out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_pruned_exHiLD
+
+Results of the PCA
+Plot looks a little strange..?  2 extreme outliers from AD which need to be excluded; S191 and S70.  Also try rerunning with HW failures excluded in case that is messing up PCA.
+Go back to the beginning of the PCA steps and remove outlying individuals:
+/apps/well/plink/1.90b2n/plink --file AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge --remove extreme_outlier_inds.txt --make-bed --out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_no_AD_outliers
+
+Then remove the HWE failing SNPs:
+/apps/well/plink/1.90b2n/plink --bfile AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_no_AD_outliers –exclude AD_hwe_0.00001_fail_SNPs.txt  --make-bed --out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_no_AD_outliers_no_AD_hwe_fail
+
+Make a pruned set of the SNPs:
+/apps/well/plink/1.90b2n/plink --bfile AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_no_AD_outliers_no_AD_hwe_fail --indep-pairwise 50 5 0.2 --maf 0.1 --1 --allow-no-sex --noweb --out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_no_AD_outliers_no_AD_hwe_fail
+Apply the pruning:
+/apps/well/plink/1.90b2n/plink --bfile AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_no_AD_outliers_no_AD_hwe_fail --exclude AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_no_AD_outliers_no_AD_hwe_fail.prune.out --allow-no-sex --noweb --recode --out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_no_AD_outliers_no_AD_hwe_fail_pruned
+
+Remove regions of high LD
+/apps/well/plink/1.90b2n/plink --file AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_no_AD_outliers_no_AD_hwe_fail_pruned --exclude /well/jknight/kate/exomes/plink/AD_MDS/high-LD-regions-updated-b37.txt --range --noweb --recode –out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_no_AD_outliers_no_AD_hwe_fail_pruned_exHiLD
+
+Make sure trio probands are excluded:
+/apps/well/plink/1.90b2n/plink --file AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_no_AD_outliers_no_AD_hwe_fail_pruned_exHiLD --remove trio_probands.txt --recode –out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_no_AD_outliers_no_AD_hwe_fail_pruned_exHiLD_founders
+
+Run PCA (with outliers and hwe fails removed)
+/apps/well/plink/1.90b2n/plink --file AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_no_AD_outliers_no_AD_hwe_fail_pruned_exHiLD_founders --pca --out AD_736_multi_ethnic_chip_update_strand_ped_no_missing_no_mono_1000G_merge_no_AD_outliers_no_AD_hwe_fail_pruned_exHiLD_founders
+
+
+
+
+
+
