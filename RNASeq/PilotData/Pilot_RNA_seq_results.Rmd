@@ -1,0 +1,240 @@
+---
+title: "Abu Dhabi pilot RNA data"
+author: "Katie Burnham"
+date: '`r Sys.Date()`'
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+Explanatory text largely from
+(http://www.bioconductor.org/help/workflows/rnaseqGene/)[http://www.bioconductor.org/help/workflows/rnaseqGene/]
+and the DESeq2 manual.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(kburnhamfunctions)
+# install.packages("Vennerable", repos = "http://R-Forge.R-project.org")
+
+# Vennerable needs graph and RBGL, from bioconductor repository
+# source("http://bioconductor.org/biocLite.R")
+# biocLite("graph")
+# biocLite("RBGL")
+
+# Those packages also need reshape and gtools
+library(reshape)
+library(gtools)
+library(Vennerable)
+library(DESeq2)
+library(dplyr)
+library(ggplot2)
+library(pheatmap)
+library(RColorBrewer)
+library(BiocParallel)
+register(SnowParam(4))
+library(ReportingTools)
+library(ggrepel)
+```
+
+##  Input Data
+
+The feature count matrix prepared using the CountMatrix.R script is read in, along
+with sample information. The value in the i-th row and the j-th column of the 
+matrix tells how many reads (or fragments, for paired-end RNA-seq) have been
+assigned to gene i in sample j. It is important to never provide counts that were
+pre-normalized for sequencing depth/library size, as DESeq2's statistical model 
+is most powerful when applied to un-normalized counts, and is designed to account
+for library size differences internally.
+
+```{r data}
+counts <- read.delim("PilotRNA-hisat-count-data.txt")
+full.s.info <- read.delim("PilotSampleInfoExpanded.txt", stringsAsFactors=F,
+                          row.names=1)
+full.s.info$PatientNumber <- as.character(full.s.info$PatientNumber)
+
+# check order of samples
+all(colnames(counts) == rownames(full.s.info))
+```
+
+The object class used by the DESeq2 package to store the read counts and the 
+intermediate estimated quantities during statistical analysis is the DESeqDataSet. 
+This has range-base functionality, allowing for easier integration with e.g.
+ChIP-seq peaks. This object must have an associated design formula expressing the
+variables used in modelling. This is used to estimate the dispersions and log2 FC, and can be changed later if all the DE steps are subsequently repeated.
+
+NB - under default settings, the final term in the model is the variable of 
+interest and control level is first.
+
+These data are therefore converted into a DESeq2 dataset with the sample type and
+disease status included in the model to begin with:
+
+```{r convert-to-DESeq2DataSet}
+dds <- DESeqDataSetFromMatrix(countData=counts,
+                              colData=full.s.info,
+                              design= ~ SampleType + Disease)
+dds$Disease <- relevel(dds$Disease, ref = "Control")
+dds
+
+# to add feature data
+featureData <- data.frame(gene=rownames(counts))
+mcols(dds) <- DataFrame(mcols(dds), featureData)
+mcols(dds)
+```
+
+### Pre-filtering
+While it is not necessary to pre-filter low count genes before running the DESeq2 
+functions, there are two reasons which make pre-filtering useful: by removing rows 
+in which there are very few reads, we reduce the memory size of the dds data 
+object, and we increase the speed of the transformation and testing functions 
+within DESeq2. Here we perform a minimal pre-filtering to keep only rows that have 
+at least 10 reads total. Note that more strict filtering to increase power is 
+automatically applied via independent filtering on the mean of normalized counts 
+within the results function.
+
+```{r pre-filtering}
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+dds
+```
+
+### Exploratory analysis and visualisation
+
+Many common statistical methods for exploratory analysis of multidimensional data,
+for example clustering and principal components analysis (PCA), work best for data
+that generally has the same range of variance at different ranges of the mean
+values. When the expected amount of variance is approximately the same across
+different mean values, the data is said to be homoskedastic. For RNA-seq counts,
+however, the expected variance grows with the mean. For example, if one performs
+PCA directly on a matrix of counts or normalized counts (e.g. correcting for
+differences in sequencing depth), the resulting plot typically depends mostly on
+the genes with highest counts because they show the largest absolute differences
+between samples. A simple and often used strategy to avoid this is to take the
+logarithm of the normalized count values plus a pseudocount of 1; however,
+depending on the choice of pseudocount, now the genes with the very lowest counts
+will contribute a great deal of noise to the resulting plot, because taking the
+logarithm of small counts actually inflates their variance. 
+
+As a solution, DESeq2 offers two transformations for count data that stabilize the
+variance across the mean: the regularized-logarithm transformation or rlog (Love,
+Huber, and Anders 2014), and the variance stabilizing transformation (VST) for
+negative binomial data with a dispersion-mean trend (Anders and Huber 2010),
+implemented in the vst function. For genes with high counts, the rlog and VST will
+give similar results to the ordinary log2 transformation of normalized counts. For
+genes with lower counts, however, the values are shrunken towards the genes’
+averages across all samples. The rlog-transformed or VST data then becomes
+approximately homoskedastic, and can be used directly for computing distances
+between samples, making PCA plots, or as input to downstream methods which perform
+best with homoskedastic data.
+
+Which transformation to choose? The rlog tends to work well on small datasets (n <
+30), sometimes outperforming the VST when there is a large range of sequencing
+depth across samples (an order of magnitude difference). The VST is much faster to
+compute and is less sensitive to high count outliers than the rlog. We therefore
+recommend the VST for large datasets (hundreds of samples).
+
+On this advice, I have used the VST (this also includes correction for sequencing
+depth. The "blind"=FALSE argument means that the experimental design is used to estimate global variability in the counts. 
+
+```{r vst}
+vsd <- vst(dds, blind=FALSE)
+
+# Compare before and after
+boxplot(assay(dds))
+boxplot(assay(vsd))
+```
+
+```{r pca}
+pcaData <- plotPCA(vsd, intgroup = c("Disease", "SampleType"), returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(x = PC1, y = PC2, color = SampleType, shape = Disease)) +
+  geom_point(size =3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  theme_bw()
+```
+
+```{r corr-matrix}
+sampleDists <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(vsd$SampleType, vsd$Disease, sep = " - " )
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors)
+```
+
+
+## Differential expression analysis
+
+There are many possible comparisons to perform here, and the experimental design 
+is complex (different cell types from the same patients and controls and multiple
+time points). Contrasts of interest discussed are:
+
+-	Overlap LPS response with healthy volunteers
+-	Modifier effect of MET
+-	T2D vs non
+-	2nd visit (post MET treatment)
+
+### LPS response
+
+This is comparing the CD14 cells treated with LPS to those not treated, taking
+account of patient (and excluding the 2nd visit samples).
+
+```{r lps-response}
+lps.dds <- dds[, dds@colData@listData$SampleType %in% c("CD14", "CD14_LPS")]
+lps.dds <- lps.dds[, lps.dds@colData@listData$Repeat.Sample == FALSE]
+# 38 samples remaining (19 individuals, 2 samples each)
+lps.dds$SampleType <- droplevels(lps.dds$SampleType)
+lps.dds$PatientNumber <- as.factor(lps.dds$PatientNumber)
+design(lps.dds) <- ~ PatientNumber + SampleType
+
+lps.dds <- DESeq(lps.dds, parallel=TRUE)
+lps.res <- results(lps.dds, parallel=TRUE)
+lps.res
+
+lps.res.LFC <- lfcShrink(lps.dds, coef=20, parallel=TRUE)
+lps.res.LFC
+
+lpsresOrdered <- lps.res.LFC[order(lps.res.LFC$pvalue),]
+
+summary(lps.res)
+sum(lps.res$padj < 0.05, na.rm=TRUE)
+# 15987
+
+res05 <- results(lps.dds, alpha=0.05)
+plotMA(lps.res.LFC)
+
+d <- plotCounts(lps.dds, gene=which.min(lps.res$padj), 
+                intgroup=c("SampleType", "Disease", "PatientNumber"),
+                returnData=TRUE)
+ggplot(d, aes(x=SampleType, y=count, color=Disease, group=PatientNumber)) + 
+  geom_point(size=3) + 
+  scale_y_log10() +
+  theme_bw() +
+  geom_line()
+```
+
+```{r lps-report}
+des2Report <- HTMLReport(shortName = 'LPSResponse_analysis_with_DESeq2_pilot',
+                     title = 'Differential expression between CD14 and CD14_LPS',
+                         reportDirectory = "./reports")
+publish(lps.res, des2Report, pvalueCutoff=0.05, n=100,
+        DataSet=lps.dds, 
+        lfc=log(1.5, 2),
+        annotation.db = "EnsDb.Hsapiens.v86",
+        reportDir="./reports")
+finish(des2Report)
+```
+
+```{r volcano-plots}
+lps.res.LFC$sig <- ifelse(lps.res.LFC$padj < 0.05, "FDR<0.05", "Not Sig")
+ggplot(data.frame(lps.res.LFC), aes(log2FoldChange, -log10(padj))) +
+  geom_point(aes(col=sig)) +
+  scale_color_manual(values=c("red", "black"))
+
+p+geom_text_repel(data=filter(results, padj<0.05), aes(label=Gene))
+```
