@@ -29,12 +29,14 @@ library(Vennerable)
 library(DESeq2)
 library(dplyr)
 library(ggplot2)
+library(vsn)
 library(pheatmap)
 library(RColorBrewer)
 library(BiocParallel)
 register(SnowParam(4))
 library(ReportingTools)
 library(ggrepel)
+library(biomaRt)
 ```
 
 ##  Input Data
@@ -48,9 +50,9 @@ is most powerful when applied to un-normalized counts, and is designed to accoun
 for library size differences internally.
 
 ```{r data}
-counts <- read.delim("PilotRNA-hisat-count-data.txt")
-full.s.info <- read.delim("PilotSampleInfoExpanded.txt", stringsAsFactors=F,
-                          row.names=1)
+counts <- read.delim("PilotData/PilotRNA-hisat-count-data.txt")
+full.s.info <- read.delim("PilotData/PilotSampleInfoExpanded.txt",
+                          stringsAsFactors=F, row.names=1)
 full.s.info$PatientNumber <- as.character(full.s.info$PatientNumber)
 
 # check order of samples
@@ -83,6 +85,7 @@ mcols(dds)
 ```
 
 ### Pre-filtering
+
 While it is not necessary to pre-filter low count genes before running the DESeq2 
 functions, there are two reasons which make pre-filtering useful: by removing rows 
 in which there are very few reads, we reduce the memory size of the dds data 
@@ -134,14 +137,14 @@ compute and is less sensitive to high count outliers than the rlog. We therefore
 recommend the VST for large datasets (hundreds of samples).
 
 On this advice, I have used the VST (this also includes correction for sequencing
-depth. The "blind"=FALSE argument means that the experimental design is used to estimate global variability in the counts. 
+depth. The "blind"=TRUE argument means that the experimental design is not used to estimate global variability in the counts i.e. more appropriate for QC purposes. 
 
 ```{r vst}
-vsd <- vst(dds, blind=FALSE)
+vsd <- vst(dds, blind=TRUE)
 
 # Compare before and after
-boxplot(assay(dds))
-boxplot(assay(vsd))
+meanSdPlot(assay(dds))
+meanSdPlot(assay(vsd))
 ```
 
 ```{r pca}
@@ -193,20 +196,28 @@ lps.dds$PatientNumber <- as.factor(lps.dds$PatientNumber)
 design(lps.dds) <- ~ PatientNumber + SampleType
 
 lps.dds <- DESeq(lps.dds, parallel=TRUE)
-lps.res <- results(lps.dds, parallel=TRUE)
-lps.res
+plotDispEsts(lps.dds, main="Dispersion plot")
+
+lps.res <- results(lps.dds, parallel=TRUE, independentFiltering=FALSE, tidy=TRUE)
 
 lps.res.LFC <- lfcShrink(lps.dds, coef=20, parallel=TRUE)
 lps.res.LFC
+summary(lps.res.LFC)
 
-lpsresOrdered <- lps.res.LFC[order(lps.res.LFC$pvalue),]
+lps.res$log2FoldChange <- lps.res.LFC$log2FoldChange
+lps.res$lfcSE <- lps.res.LFC$lfcSE
+lpsresOrdered <- lps.res[order(lps.res$padj), ]
 
-summary(lps.res)
-sum(lps.res$padj < 0.05, na.rm=TRUE)
-# 15987
+lpsresOrdered <- lpsresOrdered[(complete.cases(lpsresOrdered)), ]
+write.table(lpsresOrdered, file="PilotData_LPSResponse_All_Patient.txt", sep="\t")
+
+sum(lpsresOrdered$padj < 0.05, na.rm=TRUE)
+# 15566
+
+boxplot(log10(assays(lps.dds)[["cooks"]]), range=0, las=2)
 
 res05 <- results(lps.dds, alpha=0.05)
-plotMA(lps.res.LFC)
+plotMA(lps.res.LFC, ylim=c(-9, 11))
 
 d <- plotCounts(lps.dds, gene=which.min(lps.res$padj), 
                 intgroup=c("SampleType", "Disease", "PatientNumber"),
@@ -219,22 +230,149 @@ ggplot(d, aes(x=SampleType, y=count, color=Disease, group=PatientNumber)) +
 ```
 
 ```{r lps-report}
-des2Report <- HTMLReport(shortName = 'LPSResponse_analysis_with_DESeq2_pilot',
-                     title = 'Differential expression between CD14 and CD14_LPS',
-                         reportDirectory = "./reports")
-publish(lps.res, des2Report, pvalueCutoff=0.05, n=100,
-        DataSet=lps.dds, 
-        lfc=log(1.5, 2),
-        annotation.db = "EnsDb.Hsapiens.v86",
-        reportDir="./reports")
-finish(des2Report)
+# des2Report <- HTMLReport(shortName = 'LPSResponse_analysis_with_DESeq2_pilot',
+#                      title = 'Differential expression between CD14 and CD14_LPS',
+#                          reportDirectory = "./reports")
+# publish(lps.res, des2Report, pvalueCutoff=0.05, n=100,
+#         DataSet=lps.dds, 
+#         lfc=log(1.5, 2),
+#         annotation.db = "EnsDb.Hsapiens.v86",
+#         reportDir="./reports")
+# finish(des2Report)
+```
+
+```{r genes}
+ensembl <- useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl",
+                      GRCh="37")
+lps.genes <- getBM(attributes=c('ensembl_gene_id', 'ensembl_transcript_id',
+                                'hgnc_symbol', 'chromosome_name', 'start_position',
+                                'end_position'), 
+                   filters = 'ensembl_gene_id', 
+                   values =lpsresOrdered$row,
+                   mart = ensembl)
+lpsresOrdered$Gene <- lps.genes$hgnc_symbol[match(lpsresOrdered$row, 
+                                                lps.genes$ensembl_gene_id)]
 ```
 
 ```{r volcano-plots}
-lps.res.LFC$sig <- ifelse(lps.res.LFC$padj < 0.05, "FDR<0.05", "Not Sig")
-ggplot(data.frame(lps.res.LFC), aes(log2FoldChange, -log10(padj))) +
+lpsresOrdered$sig <- ifelse((lpsresOrdered$padj < 0.05 & 
+                            abs(lpsresOrdered$log2FoldChange) >= log(1.5, 2)), 
+                          "Sig DE", "Not Sig")
+ggplot(data.frame(lpsresOrdered), aes(log2FoldChange, -log10(padj))) +
   geom_point(aes(col=sig)) +
-  scale_color_manual(values=c("red", "black"))
+  scale_color_manual(values=c("black", "red")) +
+  theme_bw() +
+  geom_text_repel(data=subset(data.frame(lpsresOrdered), padj<5e-250),
+                  aes(label=Gene))
+```
 
-p+geom_text_repel(data=filter(results, padj<0.05), aes(label=Gene))
+```{r lps2-correlation}
+correlation.plot <- function (limma.1, limma.2, name.1 = "A", name.2 = "B", 
+          main.title = "Correlation Plot", 
+          key = TRUE, col.1 = "darkgreen", col.2 = "gold", col.both = "blue", 
+  labels = FALSE) {
+  
+  limma.1 <- limma.1[complete.cases(limma.1), ]
+  limma.2 <- limma.2[complete.cases(limma.2), ]
+  
+  limma.2 <- limma.2[which(limma.2$Gene %in% limma.1$Gene), 
+    ]
+  limma.1 <- limma.1[which(limma.1$Gene %in% limma.2$Gene), 
+    ]
+  limma.2 <- limma.2[match(limma.1$Gene, limma.2$Gene), 
+    ]
+  
+  plot.range <- max(abs(c(limma.1$log2FoldChange, limma.2$log2FoldChange)))
+  corr.plot.colours <- rep("gray", nrow(limma.1))
+  for (i in 1:nrow(limma.1)) {
+    if (abs(limma.1$log2FoldChange[i]) > log2(1.5) & 
+        limma.1$padj[i] < 0.05 & 
+        abs(limma.2$log2FoldChange[i]) > log2(1.5) & 
+        limma.2$pad[i] < 0.05) {
+      corr.plot.colours[i] <- col.both
+    }
+    else if ((abs(limma.1$log2FoldChange[i]) > log2(1.5) & 
+              limma.1$padj[i] < 0.05) & 
+             (abs(limma.2$log2FoldChange[i]) < log2(1.5) | limma.2$padj[i] > 0.05))
+      {
+      corr.plot.colours[i] <- col.1
+    }
+    else if ((abs(limma.1$log2FoldChange[i]) < log2(1.5) | 
+              limma.1$padj[i] > 0.05) & 
+             (abs(limma.2$log2FoldChange[i]) > log2(1.5) & limma.2$padj[i] < 0.05))
+      {
+      corr.plot.colours[i] <- col.2
+    }
+    if (limma.1$log2FoldChange[i] * limma.2$log2FoldChange[i] < 0) {
+      if (abs(limma.1$log2FoldChange[i]) > log2(1.5) & limma.1$padj[i] < 0.05 &
+          abs(limma.2$log2FoldChange[i]) > log2(1.5) & limma.2$padj[i] < 0.05) 
+        {
+        corr.plot.colours[i] <- "red"
+      }
+    }
+  }
+  
+  plot(limma.1$log2FoldChange, limma.2$log2FoldChange, 
+       xlab = paste("Log2 Fold Change", name.1), 
+       ylab = paste("Log2 Fold Change", name.2), 
+       main = main.title, 
+       xlim = c(-plot.range, plot.range), 
+       ylim = c(-plot.range, plot.range), 
+       col = corr.plot.colours, pch = 20)
+  
+  text(x = (plot.range - 1), y = -(plot.range - 1), paste("Pearson's r =", 
+    format(cor(limma.1$log2FoldChange, limma.2$log2FoldChange), digits = 3)))
+  corr.test <- cor.test(limma.1$log2FoldChange, limma.2$log2FoldChange)
+  if (as.numeric(corr.test$p.value) > 0) {
+    text(x = (plot.range - 1), y = -(plot.range - 0.7), 
+      paste("p =", format(corr.test$p.value, digits = 3)))
+  }
+  else {
+    text(x = (plot.range - 1), y = -(plot.range - 0.7), 
+      "P < 2.2 x 10-16")
+  }
+  if (key == TRUE) {
+    legend("topleft", c("DE in Both", paste("DE in", name.1), 
+      paste("DE in", name.2), "DE in Opposite Directions", 
+      "Not DE"), bty = "n", col = c(col.both, col.1, col.2, 
+      "red", "gray"), pch = rep(20, 4))
+  }
+  abline(h = 0)
+  abline(v = 0)
+  if (labels == TRUE) {
+    text(limma.2$Gene, x = limma.1$log2FoldChange, 
+         y = limma.2$log2FoldChange + 0.1, cex = 0.8)
+  }
+}
+
+fairfax <- read.delim("PilotData/FairfaxScienceLPSDE.txt")
+fairfax$Gene <- fairfax$Symbol
+
+fairfax$log2FoldChange <- fairfax$logFC.LPS2.vs.Naive
+fairfax$padj <- fairfax$adj.P.Val.LPS2.vs.Naive
+fairfax.lps <- fairfax[, c("Gene", "log2FoldChange", "padj")]
+fairfax.lps <- fairfax.lps[complete.cases(fairfax.lps), ]
+
+fairfax.lps <- aggregate(fairfax.lps[, 2:3], by=list(fairfax.lps$Gene), FUN=mean)
+colnames(fairfax.lps)[1] <- "Gene"
+lps.de <- aggregate(lpsresOrdered[, c(3, 7)], by=list(lpsresOrdered$Gene),
+                    FUN=mean)
+colnames(lps.de)[1] <- "Gene"
+
+correlation.plot(lps.de, fairfax.lps, "Pilot", "Fairfax", "LPS Response")
+```
+
+```{r lps24-correlation}
+fairfax$log2FoldChange <- fairfax$logFC.LPS24.vs.Naive
+fairfax$padj <- fairfax$adj.P.Val.LPS24h.vs.Naive
+fairfax.lps <- fairfax[, c("Gene", "log2FoldChange", "padj")]
+fairfax.lps <- fairfax.lps[complete.cases(fairfax.lps), ]
+
+fairfax.lps <- aggregate(fairfax.lps[, 2:3], by=list(fairfax.lps$Gene), FUN=mean)
+colnames(fairfax.lps)[1] <- "Gene"
+lps.de <- aggregate(lpsresOrdered[, c(3, 7)], by=list(lpsresOrdered$Gene),
+                    FUN=mean)
+colnames(lps.de)[1] <- "Gene"
+
+correlation.plot(lps.de, fairfax.lps, "Pilot", "Fairfax", "LPS Response")
 ```
