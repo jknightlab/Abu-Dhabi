@@ -26,17 +26,34 @@ library(kburnhamfunctions)
 library(reshape)
 library(gtools)
 library(Vennerable)
+
+# Differential expressino analysis
 library(DESeq2)
+
+# plotting figures
 library(dplyr)
 library(ggplot2)
+library(ggrepel)
+
+# normalisation
 library(vsn)
+
+# heatmap
 library(pheatmap)
 library(RColorBrewer)
+
+# parallel computing
 library(BiocParallel)
 register(SnowParam(4))
+
+# experimental report generation
 library(ReportingTools)
-library(ggrepel)
+
+# look up gene ids
 library(biomaRt)
+
+# pathway analysis
+library(XGR)
 ```
 
 ##  Input Data
@@ -50,8 +67,8 @@ is most powerful when applied to un-normalized counts, and is designed to accoun
 for library size differences internally.
 
 ```{r data}
-counts <- read.delim("PilotData/PilotRNA-hisat-count-data.txt")
-full.s.info <- read.delim("PilotData/PilotSampleInfoExpanded.txt",
+counts <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/PilotRNA-hisat-count-data.txt")
+full.s.info <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/PilotSampleInfoExpanded.txt",
                           stringsAsFactors=F, row.names=1)
 full.s.info$PatientNumber <- as.character(full.s.info$PatientNumber)
 
@@ -156,6 +173,32 @@ ggplot(pcaData, aes(x = PC1, y = PC2, color = SampleType, shape = Disease)) +
   ylab(paste0("PC2: ", percentVar[2], "% variance")) +
   coord_fixed() +
   theme_bw()
+
+vsd.treat <- vsd[, vsd$SampleType %in% c("CD14_PBS", "CD14_LPS", 
+                                         "CD14_MET", "CD14_MET_LPS")]
+vsd.treat$SampleType <- droplevels(vsd.treat$SampleType)
+pcaData <- plotPCA(vsd.treat, 
+                   intgroup = c("Disease", "SampleType", "PatientNumber"), 
+                   returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+ggplot(pcaData, aes(x = PC1, y = PC2, color = SampleType, shape = Disease)) +
+  geom_point(size =3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  # geom_text(aes(y = PC2+1, label=PatientNumber)) +
+  theme_bw()
+
+ggplot(pcaData, aes(x=PatientNumber, y=PC1)) +
+  geom_boxplot() +
+  geom_point() +
+  theme_bw()
+
+ggplot(pcaData, aes(x=SampleType, y=PC1)) +
+  geom_boxplot() +
+  geom_point() +
+  theme_bw()
 ```
 
 ```{r corr-matrix}
@@ -184,21 +227,22 @@ time points). Contrasts of interest discussed are:
 
 ### LPS response
 
-This is comparing the CD14 cells treated with LPS to those not treated, taking
-account of patient (and excluding the 2nd visit samples).
+This is comparing the CD14 cells treated with LPS to those treated with PBS 
+(controls), taking account of patient (and excluding the 2nd visit samples).
 
 ```{r lps-response}
-lps.dds <- dds[, dds@colData@listData$SampleType %in% c("CD14", "CD14_LPS")]
+lps.dds <- dds[, dds@colData@listData$SampleType %in% c("CD14_PBS", "CD14_LPS")]
 lps.dds <- lps.dds[, lps.dds@colData@listData$Repeat.Sample == FALSE]
 # 38 samples remaining (19 individuals, 2 samples each)
 lps.dds$SampleType <- droplevels(lps.dds$SampleType)
+lps.dds$SampleType <- relevel(lps.dds$SampleType, ref = "CD14_PBS")
 lps.dds$PatientNumber <- as.factor(lps.dds$PatientNumber)
 design(lps.dds) <- ~ PatientNumber + SampleType
 
 lps.dds <- DESeq(lps.dds, parallel=TRUE)
 plotDispEsts(lps.dds, main="Dispersion plot")
 
-lps.res <- results(lps.dds, parallel=TRUE, independentFiltering=FALSE, tidy=TRUE)
+lps.res <- results(lps.dds, parallel=TRUE, independentFiltering=TRUE, tidy=TRUE)
 
 lps.res.LFC <- lfcShrink(lps.dds, coef=20, parallel=TRUE)
 lps.res.LFC
@@ -207,17 +251,16 @@ summary(lps.res.LFC)
 lps.res$log2FoldChange <- lps.res.LFC$log2FoldChange
 lps.res$lfcSE <- lps.res.LFC$lfcSE
 lpsresOrdered <- lps.res[order(lps.res$padj), ]
+head(lpsresOrdered)
 
 lpsresOrdered <- lpsresOrdered[(complete.cases(lpsresOrdered)), ]
 write.table(lpsresOrdered, file="PilotData_LPSResponse_All_Patient.txt", sep="\t")
 
-sum(lpsresOrdered$padj < 0.05, na.rm=TRUE)
-# 15566
-
 boxplot(log10(assays(lps.dds)[["cooks"]]), range=0, las=2)
+# No outliers 
 
 res05 <- results(lps.dds, alpha=0.05)
-plotMA(lps.res.LFC, ylim=c(-9, 11))
+plotMA(lps.res.LFC, ylim=c(-2.5, 2.5))
 
 d <- plotCounts(lps.dds, gene=which.min(lps.res$padj), 
                 intgroup=c("SampleType", "Disease", "PatientNumber"),
@@ -241,6 +284,8 @@ ggplot(d, aes(x=SampleType, y=count, color=Disease, group=PatientNumber)) +
 # finish(des2Report)
 ```
 
+The gene symbols are looked up using biomaRt from their ensembl IDs.
+
 ```{r genes}
 ensembl <- useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl",
                       GRCh="37")
@@ -254,6 +299,9 @@ lpsresOrdered$Gene <- lps.genes$hgnc_symbol[match(lpsresOrdered$row,
                                                 lps.genes$ensembl_gene_id)]
 ```
 
+`r sum(lpsresOrdered$padj < 0.05, na.rm=TRUE)` transcripts are differentially
+expressed. 
+
 ```{r volcano-plots}
 lpsresOrdered$sig <- ifelse((lpsresOrdered$padj < 0.05 & 
                             abs(lpsresOrdered$log2FoldChange) >= log(1.5, 2)), 
@@ -262,9 +310,15 @@ ggplot(data.frame(lpsresOrdered), aes(log2FoldChange, -log10(padj))) +
   geom_point(aes(col=sig)) +
   scale_color_manual(values=c("black", "red")) +
   theme_bw() +
-  geom_text_repel(data=subset(data.frame(lpsresOrdered), padj<5e-250),
+  geom_text_repel(data=subset(data.frame(lpsresOrdered), padj<5e-10),
                   aes(label=Gene))
 ```
+
+These results are negatively correlated with the CD14 LPS response from Ben's
+healthy volunteer data. And yes, I have checked the direction of the contrasts.
+
+Due to the different platforms used, for this comparison mean log fold changes 
+were calculated for each gene.
 
 ```{r lps2-correlation}
 correlation.plot <- function (limma.1, limma.2, name.1 = "A", name.2 = "B", 
@@ -282,7 +336,9 @@ correlation.plot <- function (limma.1, limma.2, name.1 = "A", name.2 = "B",
   limma.2 <- limma.2[match(limma.1$Gene, limma.2$Gene), 
     ]
   
-  plot.range <- max(abs(c(limma.1$log2FoldChange, limma.2$log2FoldChange)))
+  plot.range.x <- max(abs(c(limma.1$log2FoldChange)))
+  plot.range.y <- max(abs(c(limma.2$log2FoldChange)))
+  
   corr.plot.colours <- rep("gray", nrow(limma.1))
   for (i in 1:nrow(limma.1)) {
     if (abs(limma.1$log2FoldChange[i]) > log2(1.5) & 
@@ -316,19 +372,19 @@ correlation.plot <- function (limma.1, limma.2, name.1 = "A", name.2 = "B",
        xlab = paste("Log2 Fold Change", name.1), 
        ylab = paste("Log2 Fold Change", name.2), 
        main = main.title, 
-       xlim = c(-plot.range, plot.range), 
-       ylim = c(-plot.range, plot.range), 
+       xlim = c(-plot.range.x, plot.range.x), 
+       ylim = c(-plot.range.y, plot.range.y), 
        col = corr.plot.colours, pch = 20)
   
-  text(x = (plot.range - 1), y = -(plot.range - 1), paste("Pearson's r =", 
+  text(x = (plot.range.x - 1), y = -(plot.range.y - 1), paste("Pearson's r =", 
     format(cor(limma.1$log2FoldChange, limma.2$log2FoldChange), digits = 3)))
   corr.test <- cor.test(limma.1$log2FoldChange, limma.2$log2FoldChange)
   if (as.numeric(corr.test$p.value) > 0) {
-    text(x = (plot.range - 1), y = -(plot.range - 0.7), 
+    text(x = (plot.range.x - 1), y = -(plot.range.y - 0.7), 
       paste("p =", format(corr.test$p.value, digits = 3)))
   }
   else {
-    text(x = (plot.range - 1), y = -(plot.range - 0.7), 
+    text(x = (plot.range.x - 1), y = -(plot.range.y - 0.7), 
       "P < 2.2 x 10-16")
   }
   if (key == TRUE) {
@@ -345,7 +401,8 @@ correlation.plot <- function (limma.1, limma.2, name.1 = "A", name.2 = "B",
   }
 }
 
-fairfax <- read.delim("PilotData/FairfaxScienceLPSDE.txt")
+fairfax <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/FairfaxScienceLPSDE.txt",
+                      stringsAsFactors=FALSE)
 fairfax$Gene <- fairfax$Symbol
 
 fairfax$log2FoldChange <- fairfax$logFC.LPS2.vs.Naive
@@ -359,7 +416,7 @@ lps.de <- aggregate(lpsresOrdered[, c(3, 7)], by=list(lpsresOrdered$Gene),
                     FUN=mean)
 colnames(lps.de)[1] <- "Gene"
 
-correlation.plot(lps.de, fairfax.lps, "Pilot", "Fairfax", "LPS Response")
+correlation.plot(lps.de, fairfax.lps, "Pilot", "Fairfax 2h", "LPS Response")
 ```
 
 ```{r lps24-correlation}
@@ -374,5 +431,302 @@ lps.de <- aggregate(lpsresOrdered[, c(3, 7)], by=list(lpsresOrdered$Gene),
                     FUN=mean)
 colnames(lps.de)[1] <- "Gene"
 
-correlation.plot(lps.de, fairfax.lps, "Pilot", "Fairfax", "LPS Response")
+correlation.plot(lps.de, fairfax.lps, "Pilot", "Fairfax 24h", "LPS Response")
+```
+
+DESeq2 won't let me include disease in the model in the normal way. What I could 
+do instead is to combine patient and disease as a single factor, but I don't want
+to do this as it then doesn't acknowledge the grouping by disease status. Instead
+I have analysed the patients and controls separately:
+
+```{r lps-response-controls}
+lps.con.dds <- dds[, dds@colData@listData$SampleType %in% c("CD14_PBS",
+                                                            "CD14_LPS")]
+lps.con.dds <- lps.con.dds[, lps.con.dds@colData@listData$Repeat.Sample == FALSE]
+lps.con.dds <- lps.con.dds[, lps.con.dds@colData@listData$Disease == "Control"]
+# 20 samples remaining (10 individuals, 2 samples each)
+lps.con.dds$SampleType <- droplevels(lps.con.dds$SampleType)
+lps.con.dds$Disease <- droplevels(lps.con.dds$Disease)
+lps.con.dds$PatientNumber <- as.factor(lps.con.dds$PatientNumber)
+lps.con.dds$SampleType <- relevel(lps.con.dds$SampleType, ref="CD14_PBS")
+design(lps.con.dds) <- ~ PatientNumber + SampleType
+
+lps.con.dds <- DESeq(lps.con.dds, parallel=TRUE)
+plotDispEsts(lps.con.dds, main="Dispersion plot")
+
+lps.con.res <- results(lps.con.dds, parallel=TRUE, independentFiltering=FALSE,
+                       tidy=TRUE)
+
+resultsNames(lps.con.dds)
+lps.con.res.LFC <- lfcShrink(lps.con.dds, coef=11, parallel=TRUE)
+lps.con.res.LFC
+summary(lps.res.LFC)
+
+lps.con.res$log2FoldChange <- lps.con.res.LFC$log2FoldChange
+lps.con.res$lfcSE <- lps.con.res.LFC$lfcSE
+lpsconresOrdered <- lps.con.res[order(lps.con.res$padj), ]
+
+lpsconresOrdered <- lpsconresOrdered[(complete.cases(lpsconresOrdered)), ]
+write.table(lpsconresOrdered, file="PilotData_LPSResponse_Control_Patient.txt",
+            sep="\t")
+
+boxplot(log10(assays(lps.con.dds)[["cooks"]]), range=0, las=2)
+
+res05 <- results(lps.con.dds, alpha=0.05)
+plotMA(lps.con.res.LFC, ylim=c(-3, 4))
+
+d <- plotCounts(lps.con.dds, gene=which.min(lps.con.res$padj), 
+                intgroup=c("SampleType", "PatientNumber"),
+                returnData=TRUE)
+ggplot(d, aes(x=SampleType, y=count, group=PatientNumber)) + 
+  geom_point(size=3) + 
+  scale_y_log10() +
+  theme_bw() +
+  geom_line()
+
+fairfax$log2FoldChange <- fairfax$logFC.LPS2.vs.Naive
+fairfax$padj <- fairfax$adj.P.Val.LPS2.vs.Naive
+fairfax.lps <- fairfax[, c("Gene", "log2FoldChange", "padj")]
+fairfax.lps <- fairfax.lps[complete.cases(fairfax.lps), ]
+
+fairfax.lps <- aggregate(fairfax.lps[, 2:3], by=list(fairfax.lps$Gene), FUN=mean)
+colnames(fairfax.lps)[1] <- "Gene"
+
+lpsconresOrdered$Gene <- lps.genes$hgnc_symbol[match(lpsconresOrdered$row, 
+                                                lps.genes$ensembl_gene_id)]
+lps.con.de <- aggregate(lpsconresOrdered[, c(3, 7)], by=list(lpsconresOrdered$Gene),
+                    FUN=mean)
+colnames(lps.con.de)[1] <- "Gene"
+
+correlation.plot(lps.con.de, fairfax.lps, "Pilot - Controls", "Fairfax 2h", 
+                 "LPS Response")
+correlation.plot(lps.de, lps.con.de, "Pilot", "Pilot - Controls", "LPS Response")
+```
+
+
+```{r lps-response-t2d}
+lps.t2d.dds <- dds[, dds@colData@listData$SampleType %in% c("CD14_PBS",
+                                                            "CD14_LPS")]
+lps.t2d.dds <- lps.t2d.dds[, lps.t2d.dds@colData@listData$Repeat.Sample == FALSE]
+lps.t2d.dds <- lps.t2d.dds[, lps.t2d.dds@colData@listData$Disease == "T2D"]
+# 18 samples remaining (9 individuals, 2 samples each)
+lps.t2d.dds$SampleType <- droplevels(lps.t2d.dds$SampleType)
+lps.t2d.dds$SampleType <- relevel(lps.t2d.dds$SampleType, ref="CD14_PBS")
+lps.t2d.dds$Disease <- droplevels(lps.t2d.dds$Disease)
+lps.t2d.dds$PatientNumber <- as.factor(lps.t2d.dds$PatientNumber)
+design(lps.t2d.dds) <- ~ PatientNumber + SampleType
+
+lps.t2d.dds <- DESeq(lps.t2d.dds, parallel=TRUE)
+plotDispEsts(lps.t2d.dds, main="Dispersion plot")
+
+lps.t2d.res <- results(lps.t2d.dds, parallel=TRUE, independentFiltering=FALSE,
+                       tidy=TRUE)
+
+resultsNames(lps.t2d.dds)
+lps.t2d.res.LFC <- lfcShrink(lps.t2d.dds, coef=10, parallel=TRUE)
+lps.t2d.res.LFC
+summary(lps.res.LFC)
+
+lps.t2d.res$log2FoldChange <- lps.t2d.res.LFC$log2FoldChange
+lps.t2d.res$lfcSE <- lps.t2d.res.LFC$lfcSE
+lpst2dresOrdered <- lps.t2d.res[order(lps.t2d.res$padj), ]
+
+lpst2dresOrdered <- lpst2dresOrdered[(complete.cases(lpst2dresOrdered)), ]
+write.table(lpst2dresOrdered, file="PilotData_LPSResponse_T2D_Patient.txt",
+            sep="\t")
+
+boxplot(log10(assays(lps.t2d.dds)[["cooks"]]), range=0, las=2)
+
+res05 <- results(lps.t2d.dds, alpha=0.05)
+plotMA(lps.t2d.res.LFC, ylim=c(-2, 2))
+
+d <- plotCounts(lps.t2d.dds, gene=which.min(lps.t2d.res$padj), 
+                intgroup=c("SampleType", "PatientNumber"),
+                returnData=TRUE)
+ggplot(d, aes(x=SampleType, y=count, group=PatientNumber)) + 
+  geom_point(size=3) + 
+  scale_y_log10() +
+  theme_bw() +
+  geom_line()
+
+fairfax$log2FoldChange <- fairfax$logFC.LPS2.vs.Naive
+fairfax$padj <- fairfax$adj.P.Val.LPS2.vs.Naive
+fairfax.lps <- fairfax[, c("Gene", "log2FoldChange", "padj")]
+fairfax.lps <- fairfax.lps[complete.cases(fairfax.lps), ]
+
+fairfax.lps <- aggregate(fairfax.lps[, 2:3], by=list(fairfax.lps$Gene), FUN=mean)
+colnames(fairfax.lps)[1] <- "Gene"
+
+lpst2dresOrdered$Gene <- lps.genes$hgnc_symbol[match(lpst2dresOrdered$row, 
+                                                lps.genes$ensembl_gene_id)]
+lps.t2d.de <- aggregate(lpst2dresOrdered[, c(3, 7)], by=list(lpst2dresOrdered$Gene),
+                    FUN=mean)
+colnames(lps.t2d.de)[1] <- "Gene"
+
+correlation.plot(lps.t2d.de, fairfax.lps, "Pilot - T2D", "Fairfax 2h", 
+                 "LPS Response")
+correlation.plot(lps.de, lps.t2d.de, "Pilot", "Pilot - T2D", "LPS Response")
+```
+
+Pathway analysis using XGR of LPS response
+
+```{r lps-xgr}
+RData.location <- "http://galahad.well.ox.ac.uk/bigdata"
+
+# All pilot data
+data <- lpsresOrdered$Gene[lpsresOrdered$sig == "Sig DE"]
+background <- lpsresOrdered$Gene
+eTerm_LPSAll_GOBP_lea <- xEnricherGenes(data=data, background=background,
+                                        ontology="GOBP",
+                                        ontology.algorithm="lea",
+                                        RData.location=RData.location)
+bp_LPSAll_GOBP_lea <- xEnrichBarplot(eTerm_LPSAll_GOBP_lea,
+                                   displayBy="fdr", top_num=10)
+bp_LPSAll_GOBP_lea
+
+# Fairfax
+data <- fairfax$Symbol[fairfax$adj.P.Val.LPS2.vs.Naive < 0.05 &
+                         abs(fairfax$logFC.LPS2.vs.Naive) > log(1.5, 2)]
+background <- fairfax$Symbol
+eTerm_LPS2_GOBP_lea <- xEnricherGenes(data=data, background=background,
+                                      ontology="GOBP",
+                                      ontology.algorithm="lea",
+                                     RData.location=RData.location)
+
+# Compare
+list_eTerm <- list(eTerm_LPSAll_GOBP_lea, eTerm_LPS2_GOBP_lea)
+names(list_eTerm) <- c('Abu Dhabi', 'Fairfax')
+xEnrichCompare(list_eTerm, displayBy="fc", FDR.cutoff=0.01) + 
+  theme(axis.text.y=element_text(size=10))
+
+# Controls
+data <- lpsconresOrdered$Gene[lpsconresOrdered$pad < 0.05 &
+                              abs(lpsconresOrdered$log2FoldChange) > log(1.5, 2)]
+background <- lpsconresOrdered$Gene
+eTerm_LPSControl_GOBP_lea <- xEnricherGenes(data=data, background=background,
+                                          ontology="GOBP",
+                                          ontology.algorithm="lea",
+                                          RData.location=RData.location)
+
+# T2D
+data <- lpst2dresOrdered$Gene[lpst2dresOrdered$padj < 0.05 &
+                                abs(lpst2dresOrdered$log2FoldChange) > log(1.5, 2)]
+background <- lpst2dresOrdered$Gene
+eTerm_LPST2D_GOBP_lea <- xEnricherGenes(data=data, background=background,
+                                          ontology="GOBP",
+                                          ontology.algorithm="lea",
+                                          RData.location=RData.location)
+
+# Compare
+list_eTerm <- list(eTerm_LPSAll_GOBP_lea, eTerm_LPSControl_GOBP_lea,
+                   eTerm_LPST2D_GOBP_lea)
+names(list_eTerm) <- c('Abu Dhabi (All)', 'Controls', "T2D")
+xEnrichCompare(list_eTerm, displayBy="fc", FDR.cutoff=0.01) + 
+  theme(axis.text.y=element_text(size=10))
+```
+
+### Modifier effect of MET
+
+### T2D vs Controls
+
+The repeat samples are excluded, patient is not included in the model (as the
+model would not be full rank) but Sample Type is. 
+
+```{r disease}
+disease.dds <- dds[, dds@colData@listData$Repeat.Sample == FALSE]
+# 152 samples remaining (19 individuals, 8 samples each)
+disease.dds$PatientNumber <- as.factor(disease.dds$PatientNumber)
+design(disease.dds) <- ~ SampleType + Disease
+
+disease.dds <- DESeq(disease.dds, parallel=TRUE)
+plotDispEsts(disease.dds, main="Dispersion plot")
+
+disease.res <- results(disease.dds, parallel=TRUE, independentFiltering=FALSE,
+                       tidy=TRUE)
+
+resultsNames(disease.dds)
+disease.res.LFC <- lfcShrink(disease.dds, coef=9, parallel=TRUE)
+disease.res.LFC
+summary(lps.res.LFC)
+
+disease.res$log2FoldChange <- disease.res.LFC$log2FoldChange
+disease.res$lfcSE <- disease.res.LFC$lfcSE
+diseaseresOrdered <- disease.res[order(disease.res$padj), ]
+
+diseaseresOrdered <- diseaseresOrdered[(complete.cases(diseaseresOrdered)), ]
+write.table(diseaseresOrdered, file="PilotData_Disease_SampleType.txt",
+            sep="\t")
+
+boxplot(log10(assays(disease.dds)[["cooks"]]), range=0, las=2)
+
+res05 <- results(disease.dds, alpha=0.05)
+plotMA(disease.res.LFC, ylim=c(-3, 3))
+
+d <- plotCounts(disease.dds, gene=which.min(disease.res$padj), 
+                intgroup=c("Disease", "SampleType", "PatientNumber"),
+                returnData=TRUE)
+ggplot(d, aes(x=Disease, y=count, group=SampleType, col=SampleType)) + 
+  geom_point(size=3) + 
+  scale_y_log10() +
+  theme_bw() +
+  geom_line()
+
+ggplot(d, aes(x=Disease, y=count, group=PatientNumber, col=PatientNumber)) + 
+  facet_wrap(~ SampleType, scales="free") +
+  geom_point(size=3) + 
+  scale_y_log10() +
+  theme_bw() +
+  geom_line()
+```
+
+### Repeat visit
+
+Individuals without a repeat visit are excluded.
+
+```{r repeat}
+repeat.inds <- names(which(table(dds$PatientNumber) == 16))
+repeat.dds <- dds[, dds@colData@listData$PatientNumber %in% repeat.inds]
+# 122 samples remaining (7 individuals, 16 samples each)
+repeat.dds$PatientNumber <- as.factor(repeat.dds$PatientNumber)
+design(repeat.dds) <- ~ SampleType + PatientNumber + Repeat.Sample
+
+repeat.dds <- DESeq(repeat.dds, parallel=TRUE)
+plotDispEsts(repeat.dds, main="Dispersion plot")
+
+repeat.res <- results(repeat.dds, parallel=TRUE, independentFiltering=FALSE,
+                       tidy=TRUE)
+
+resultsNames(repeat.dds)
+repeat.res.LFC <- lfcShrink(repeat.dds, coef=15, parallel=TRUE)
+repeat.res.LFC
+summary(lps.res.LFC)
+
+repeat.res$log2FoldChange <- repeat.res.LFC$log2FoldChange
+repeat.res$lfcSE <- repeat.res.LFC$lfcSE
+repeatresOrdered <- repeat.res[order(repeat.res$padj), ]
+
+repeatresOrdered <- repeatresOrdered[(complete.cases(repeatresOrdered)), ]
+write.table(repeatresOrdered, file="PilotData_repeat_SampleType.txt",
+            sep="\t")
+
+boxplot(log10(assays(repeat.dds)[["cooks"]]), range=0, las=2)
+
+res05 <- results(repeat.dds, alpha=0.05)
+plotMA(repeat.res.LFC, ylim=c(-2, 2))
+
+d <- plotCounts(repeat.dds, gene=repeatresOrdered$row[1], 
+                intgroup=c("Repeat.Sample", "SampleType", "PatientNumber"),
+                returnData=TRUE)
+ggplot(d, aes(x=Repeat.Sample, y=count, group=PatientNumber, col=PatientNumber)) + 
+  geom_point(size=3) + 
+  scale_y_log10() +
+  theme_bw() +
+  geom_line()
+
+ggplot(d, aes(x=Repeat.Sample, y=count, group=PatientNumber, col=PatientNumber)) + 
+  facet_wrap(~ SampleType, scales="free") +
+  geom_point(size=3) + 
+  scale_y_log10() +
+  theme_bw() +
+  geom_line()
 ```
