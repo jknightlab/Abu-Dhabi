@@ -20,7 +20,7 @@ For each patient and timepoint, 8 different samples were used:
 
 - CD14_MET
 
-- CD13_MET_LPS
+- CD14_MET_LPS
 
 The files from Core are stored here: /well/jknight/kate/RNAseq/P160233-REX
 
