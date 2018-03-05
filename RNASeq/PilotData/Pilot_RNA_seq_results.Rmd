@@ -7,9 +7,10 @@ editor_options:
   chunk_output_type: console
 ---
 
-Explanatory text largely from
-(http://www.bioconductor.org/help/workflows/rnaseqGene/)[http://www.bioconductor.org/help/workflows/rnaseqGene/]
-and the DESeq2 manual.
+Explanatory text and protocol largely from
+(http://www.bioconductor.org/help/workflows/rnaseqGene/)[http://www.bioconductor.org/help/workflows/rnaseqGene/],
+'Count-based differential expression analysis of RNA sequencing data using R and
+Bioconductor - Anders et al', and the DESeq2 manual.
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
@@ -34,6 +35,7 @@ library(DESeq2)
 library(dplyr)
 library(ggplot2)
 library(ggrepel)
+library(gridExtra)
 
 # normalisation
 library(vsn)
@@ -61,10 +63,11 @@ library(XGR)
 The feature count matrix prepared using the CountMatrix.R script is read in, along
 with sample information. The value in the i-th row and the j-th column of the 
 matrix tells how many reads (or fragments, for paired-end RNA-seq) have been
-assigned to gene i in sample j. It is important to never provide counts that were
-pre-normalized for sequencing depth/library size, as DESeq2's statistical model 
-is most powerful when applied to un-normalized counts, and is designed to account
-for library size differences internally.
+assigned to gene i in sample j. 
+
+These are not pre-normalized for sequencing depth/library size, as DESeq2's
+statistical model is most powerful when applied to un-normalized counts, and is
+designed to account for library size differences internally.
 
 ```{r data}
 counts <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/PilotRNA-hisat-count-data.txt")
@@ -76,17 +79,17 @@ full.s.info$PatientNumber <- as.character(full.s.info$PatientNumber)
 all(colnames(counts) == rownames(full.s.info))
 ```
 
-The object class used by the DESeq2 package to store the read counts and the 
-intermediate estimated quantities during statistical analysis is the DESeqDataSet. 
-This has range-base functionality, allowing for easier integration with e.g.
-ChIP-seq peaks. This object must have an associated design formula expressing the
-variables used in modelling. This is used to estimate the dispersions and log2 FC, and can be changed later if all the DE steps are subsequently repeated.
+DESeq2 uses the DESeqDataSet object class to store the read counts and the 
+intermediate estimated quantities. This has range-base functionality, allowing 
+for easier integration with e.g. ChIP-seq peaks. This object must have an
+associated design formula expressing the variables used in modelling. This is 
+used to estimate the dispersions and log2 FC, and can be changed later if all the
+DE steps are subsequently repeated. These data are therefore converted into a
+DESeq2 dataset with the sample type and disease status included in the model to
+begin with.
 
 NB - under default settings, the final term in the model is the variable of 
 interest and control level is first.
-
-These data are therefore converted into a DESeq2 dataset with the sample type and
-disease status included in the model to begin with:
 
 ```{r convert-to-DESeq2DataSet}
 dds <- DESeqDataSetFromMatrix(countData=counts,
@@ -94,9 +97,26 @@ dds <- DESeqDataSetFromMatrix(countData=counts,
                               design= ~ SampleType + Disease)
 dds$Disease <- relevel(dds$Disease, ref = "Control")
 dds
+```
 
-# to add feature data
-featureData <- data.frame(gene=rownames(counts))
+The gene symbols are looked up using biomaRt from their ensembl IDs.
+
+```{r genes}
+ensembl <- useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl",
+                      GRCh="37")
+genes <- getBM(attributes=c('ensembl_gene_id', 
+                            'ensembl_transcript_id',
+                            'hgnc_symbol', 
+                            'chromosome_name', 
+                            'start_position',
+                            'end_position'), 
+                   filters = 'ensembl_gene_id', 
+                   values =rownames(counts),
+                   mart = ensembl)
+
+featureData <- data.frame(Ensembl=rownames(counts), 
+                          Gene=genes$hgnc_symbol[match(rownames(counts),
+                                                       genes$ensembl_gene_id)])
 mcols(dds) <- DataFrame(mcols(dds), featureData)
 mcols(dds)
 ```
@@ -104,18 +124,18 @@ mcols(dds)
 ### Pre-filtering
 
 While it is not necessary to pre-filter low count genes before running the DESeq2 
-functions, there are two reasons which make pre-filtering useful: by removing rows 
-in which there are very few reads, we reduce the memory size of the dds data 
-object, and we increase the speed of the transformation and testing functions 
-within DESeq2. Here we perform a minimal pre-filtering to keep only rows that have 
-at least 10 reads total. Note that more strict filtering to increase power is 
-automatically applied via independent filtering on the mean of normalized counts 
-within the results function.
+functions, by removing rows in which there are very few reads, we reduce the 
+memory size of the dds data object, and we increase the speed of the 
+transformation and testing functions. Here we perform a minimal pre-filtering to
+keep only rows that have at least 10 reads total (i.e. 5% of samples). Note that
+more strict filtering to increase power can be applied via independent filtering 
+on the mean of normalized counts within the results function.
 
 ```{r pre-filtering}
 keep <- rowSums(counts(dds)) >= 10
 dds <- dds[keep,]
 dds
+# 35886 208
 ```
 
 ### Exploratory analysis and visualisation
@@ -147,14 +167,18 @@ approximately homoskedastic, and can be used directly for computing distances
 between samples, making PCA plots, or as input to downstream methods which perform
 best with homoskedastic data.
 
-Which transformation to choose? The rlog tends to work well on small datasets (n <
-30), sometimes outperforming the VST when there is a large range of sequencing
-depth across samples (an order of magnitude difference). The VST is much faster to
-compute and is less sensitive to high count outliers than the rlog. We therefore
-recommend the VST for large datasets (hundreds of samples).
+The rlog tends to work well on small datasets (n <30), sometimes outperforming the
+VST when there is a large range of sequencing depth across samples (an order of
+magnitude difference). The VST is much faster to compute and is less sensitive to
+high count outliers than the rlog, so is therefore recommended for large datasets
+(hundreds of samples).
 
 On this advice, I have used the VST (this also includes correction for sequencing
-depth. The "blind"=TRUE argument means that the experimental design is not used to estimate global variability in the counts i.e. more appropriate for QC purposes. 
+depth). The "blind"=TRUE argument means that the experimental design is not used 
+to estimate global variability in the counts i.e. more appropriate for QC purposes.
+
+These plots show the relationship between mean expression and sd before and after
+normalisation.
 
 ```{r vst}
 vsd <- vst(dds, blind=TRUE)
@@ -163,6 +187,8 @@ vsd <- vst(dds, blind=TRUE)
 meanSdPlot(assay(dds))
 meanSdPlot(assay(vsd))
 ```
+
+PCA is then used to explore the relationship between the samples. 
 
 ```{r pca}
 pcaData <- plotPCA(vsd, intgroup = c("Disease", "SampleType"), returnData = TRUE)
@@ -173,12 +199,27 @@ ggplot(pcaData, aes(x = PC1, y = PC2, color = SampleType, shape = Disease)) +
   ylab(paste0("PC2: ", percentVar[2], "% variance")) +
   coord_fixed() +
   theme_bw()
+```
 
+This shows that a large proportion of the variance 
+(`r paste0(percentVar[1], "% variance")`) is explained by PC1, which separates 
+the naive and treated cells and also the CD14 cells from the other cell types.
+
+A second PCA for just cultured (and treated) CD14s shows the general separation
+between LPS treated cells and non-LPS treated. However, there are a few samples
+that don't fall within treatment clusters, and this seems to relate to the patient
+number e.g. Patient 100 samples are swapped round, 115 all cluster together in the
+centre and 148 at the bottom left. This can be seen in the line plot of PC1, where
+the majority of individuals show the same pattern across treatments but some 
+clearly differ.
+
+```{r pca-treated}
 vsd.treat <- vsd[, vsd$SampleType %in% c("CD14_PBS", "CD14_LPS", 
                                          "CD14_MET", "CD14_MET_LPS")]
 vsd.treat$SampleType <- droplevels(vsd.treat$SampleType)
 pcaData <- plotPCA(vsd.treat, 
-                   intgroup = c("Disease", "SampleType", "PatientNumber"), 
+                   intgroup = c("Disease", "SampleType", "PatientNumber", 
+                                "SampleNumber", "Repeat.Sample"), 
                    returnData = TRUE)
 percentVar <- round(100 * attr(pcaData, "percentVar"))
 
@@ -187,32 +228,54 @@ ggplot(pcaData, aes(x = PC1, y = PC2, color = SampleType, shape = Disease)) +
   xlab(paste0("PC1: ", percentVar[1], "% variance")) +
   ylab(paste0("PC2: ", percentVar[2], "% variance")) +
   coord_fixed() +
-  # geom_text(aes(y = PC2+1, label=PatientNumber)) +
   theme_bw()
 
-ggplot(pcaData, aes(x=PatientNumber, y=PC1)) +
-  geom_boxplot() +
-  geom_point() +
+ggplot(pcaData, aes(x = PC1, y = PC2, color = SampleType, shape = Disease)) +
+  geom_point(size =3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  geom_text_repel(data=pcaData[pcaData$PatientNumber %in% 
+                                 c(94, 100, 102, 115, 148), ], 
+                               aes(label=SampleNumber)) +
   theme_bw()
 
-ggplot(pcaData, aes(x=SampleType, y=PC1)) +
-  geom_boxplot() +
+ggplot(pcaData, aes(x=SampleType, y=PC1, col=PatientNumber, group=SampleNumber, 
+                    shape=Repeat.Sample)) +
+  geom_line() +
   geom_point() +
   theme_bw()
 ```
 
-```{r corr-matrix}
+This is also seen by clustering the distance matrix:
+
+```{r corr-matrix, fig.height=15}
 sampleDists <- dist(t(assay(vsd)))
 sampleDistMatrix <- as.matrix(sampleDists)
-rownames(sampleDistMatrix) <- paste(vsd$SampleType, vsd$Disease, sep = " - " )
 colnames(sampleDistMatrix) <- NULL
 colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+annotation_row=data.frame(vsd@colData@listData[c("Disease", "SampleType")])
+rownames(annotation_row) <- rownames(sampleDistMatrix)
+
 pheatmap(sampleDistMatrix,
          clustering_distance_rows = sampleDists,
          clustering_distance_cols = sampleDists,
+         annotation_row=annotation_row,
+         col = colors)
+
+sampleDists <- dist(t(assay(vsd.treat)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- vsd.treat$SampleNameFull
+colnames(sampleDistMatrix) <- NULL
+annotation_row=data.frame(vsd.treat@colData@listData[c("Disease", "SampleType")])
+rownames(annotation_row) <- rownames(sampleDistMatrix)
+
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         annotation_row=annotation_row,
          col = colors)
 ```
-
 
 ## Differential expression analysis
 
@@ -220,102 +283,199 @@ There are many possible comparisons to perform here, and the experimental design
 is complex (different cell types from the same patients and controls and multiple
 time points). Contrasts of interest discussed are:
 
--	Overlap LPS response with healthy volunteers
--	Modifier effect of MET
--	T2D vs non
+-	LPS response and the overlap with the same in healthy volunteers
+
+-	Modifier effect of MET (CD14 LPS vs PBS vs MET_LPS)
+
+-	T2D vs control on all cell types
+
 -	2nd visit (post MET treatment)
+
+- CD14 vs CD8
+
+- PBMC vs Paxgene
+
+Possible modifiers: 
+
+- Age
+
+- BMI
 
 ### LPS response
 
 This is comparing the CD14 cells treated with LPS to those treated with PBS 
-(controls), taking account of patient (and excluding the 2nd visit samples).
+(controls), taking account of patient (and excluding the 2nd visit samples). The
+log2 FCs are moderated using a normal prior distribution centered on zero and 
+scaled to fit the data. This removes noise from low count genes and removes the
+need to apply an arbitrary fold change threshold.
+
+P values for specific genes can be zero if all samples have zero counts, if a
+sample has an extreme count outlier based on Cook's distance, and if there is a 
+low mean normalised count (independent filtering). These genes are removed from 
+the results table. Independent filtering is performed based on the mean of
+normalised counts for each gene. A threshold is found that optimises the number 
+of adjusted p values lower than the significance level alpha. This optimisation
+is visualised.
 
 ```{r lps-response}
+# design
 lps.dds <- dds[, dds@colData@listData$SampleType %in% c("CD14_PBS", "CD14_LPS")]
 lps.dds <- lps.dds[, lps.dds@colData@listData$Repeat.Sample == FALSE]
 # 38 samples remaining (19 individuals, 2 samples each)
 lps.dds$SampleType <- droplevels(lps.dds$SampleType)
 lps.dds$SampleType <- relevel(lps.dds$SampleType, ref = "CD14_PBS")
 lps.dds$PatientNumber <- as.factor(lps.dds$PatientNumber)
+
 design(lps.dds) <- ~ PatientNumber + SampleType
+table(lps.dds$SampleType)
 
+# analysis
 lps.dds <- DESeq(lps.dds, parallel=TRUE)
-plotDispEsts(lps.dds, main="Dispersion plot")
 
-lps.res <- results(lps.dds, parallel=TRUE, independentFiltering=TRUE, tidy=TRUE)
+# normalised counts
+lps.dds.norm <- counts(lps.dds, normalized=TRUE)
+
+# results
+lps.res <- results(lps.dds, parallel=TRUE, 
+                   # lfcThreshold=log(1.5, 2), altHypothesis="greaterAbs",
+                   independentFiltering=TRUE, alpha=0.05)
+lps.res$Gene <- mcols(lps.dds)$Gene
+
+plot(metadata(lps.res)$filterNumRej,
+     type="b", ylab="Number of rejections",
+     xlab="Quantiles of filter", pch=16)
+lines(metadata(lps.res)$lo.fit, col="red")
+abline(v=metadata(lps.res)$filterTheta)
 
 lps.res.LFC <- lfcShrink(lps.dds, coef=20, parallel=TRUE)
-lps.res.LFC
-summary(lps.res.LFC)
-
 lps.res$log2FoldChange <- lps.res.LFC$log2FoldChange
 lps.res$lfcSE <- lps.res.LFC$lfcSE
 lpsresOrdered <- lps.res[order(lps.res$padj), ]
-head(lpsresOrdered)
-
 lpsresOrdered <- lpsresOrdered[(complete.cases(lpsresOrdered)), ]
-write.table(lpsresOrdered, file="PilotData_LPSResponse_All_Patient.txt", sep="\t")
+lpsresOrdered
+summary(lpsresOrdered)
+res05 <- results(lps.dds, alpha=0.05)
+
+# write.table(lpsresOrdered,
+            # file="U:/Abu-Dhabi/RNASeq/PilotData/LPSResponse_All_Patients.txt",
+            # sep="\t")
+```
+
+`r sum(lpsresOrdered$padj < 0.05, na.rm=TRUE)` transcripts are differentially
+expressed at FDR <0.05. 
+
+Various plots are used for QC. The dispersion estimates are typical, with the 
+final estimates shrunk from the gene-wise estimates towards the fitted estimates.
+
+```{r lps-response-plots}
+# QC plots
+r.lfc <- range(lps.res.LFC$log2FoldChange, na.rm=TRUE)
+plotMA(lps.res.LFC, ylim=r.lfc)
+abline(h=c(-log(1.5, 2), log(1.5, 2)), col="dodgerblue", lwd=2)
+
+plotDispEsts(lps.dds, main="Dispersion plot")
 
 boxplot(log10(assays(lps.dds)[["cooks"]]), range=0, las=2)
 # No outliers 
 
-res05 <- results(lps.dds, alpha=0.05)
-plotMA(lps.res.LFC, ylim=c(-2.5, 2.5))
+hist(lps.res$pvalue, breaks=100)
 
-d <- plotCounts(lps.dds, gene=which.min(lps.res$padj), 
+# Top DE genes
+top.10 <- order(lps.res$padj)[1:10]
+de.plot.list <- list()
+for(j in 1:10){
+  i <- top.10[j]
+  d <- plotCounts(lps.dds, gene=i, 
                 intgroup=c("SampleType", "Disease", "PatientNumber"),
                 returnData=TRUE)
-ggplot(d, aes(x=SampleType, y=count, color=Disease, group=PatientNumber)) + 
-  geom_point(size=3) + 
-  scale_y_log10() +
-  theme_bw() +
-  geom_line()
-```
+  gene.name <- as.character(mcols(lps.dds)$Gene[i])
+  de.plot.list[[j]] <- ggplot(d, aes(x=SampleType, y=count, color=Disease,
+                                     group=PatientNumber)) + 
+    geom_point(size=3) + 
+    scale_y_log10() +
+    theme_bw() +
+    geom_line() +
+    ylab(gene.name)
+}
 
-```{r lps-report}
-# des2Report <- HTMLReport(shortName = 'LPSResponse_analysis_with_DESeq2_pilot',
-#                      title = 'Differential expression between CD14 and CD14_LPS',
-#                          reportDirectory = "./reports")
-# publish(lps.res, des2Report, pvalueCutoff=0.05, n=100,
-#         DataSet=lps.dds, 
-#         lfc=log(1.5, 2),
-#         annotation.db = "EnsDb.Hsapiens.v86",
-#         reportDir="./reports")
-# finish(des2Report)
-```
+grid.arrange(grobs=de.plot.list, ncol=2)
 
-The gene symbols are looked up using biomaRt from their ensembl IDs.
-
-```{r genes}
-ensembl <- useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl",
-                      GRCh="37")
-lps.genes <- getBM(attributes=c('ensembl_gene_id', 'ensembl_transcript_id',
-                                'hgnc_symbol', 'chromosome_name', 'start_position',
-                                'end_position'), 
-                   filters = 'ensembl_gene_id', 
-                   values =lpsresOrdered$row,
-                   mart = ensembl)
-lpsresOrdered$Gene <- lps.genes$hgnc_symbol[match(lpsresOrdered$row, 
-                                                lps.genes$ensembl_gene_id)]
-```
-
-`r sum(lpsresOrdered$padj < 0.05, na.rm=TRUE)` transcripts are differentially
-expressed. 
-
-```{r volcano-plots}
 lpsresOrdered$sig <- ifelse((lpsresOrdered$padj < 0.05 & 
                             abs(lpsresOrdered$log2FoldChange) >= log(1.5, 2)), 
                           "Sig DE", "Not Sig")
 ggplot(data.frame(lpsresOrdered), aes(log2FoldChange, -log10(padj))) +
   geom_point(aes(col=sig)) +
-  scale_color_manual(values=c("black", "red")) +
+  scale_color_manual(values=c("grey", "red")) +
   theme_bw() +
   geom_text_repel(data=subset(data.frame(lpsresOrdered), padj<5e-10),
                   aes(label=Gene))
 ```
 
-These results are negatively correlated with the CD14 LPS response from Ben's
-healthy volunteer data. And yes, I have checked the direction of the contrasts.
+Pathway analysis of the differentially expressed genes is performed with XGR
+
+```{r lps-xgr}
+RData.location <- "http://galahad.well.ox.ac.uk/bigdata"
+
+# All pilot data
+data <- unique(as.character(lpsresOrdered$Gene[lpsresOrdered$sig == "Sig DE"]))
+background <- unique(as.character(lpsresOrdered$Gene))
+eTerm_LPSAll_GOBP_lea <- xEnricherGenes(data=data, background=background,
+                                        ontology="GOBP",
+                                        ontology.algorithm="lea",
+                                        RData.location=RData.location)
+bp_LPSAll_GOBP_lea <- xEnrichBarplot(eTerm_LPSAll_GOBP_lea,
+                                   displayBy="fdr", top_num=10)
+bp_LPSAll_GOBP_lea
+```
+
+In order to test for an effect of disease status on the LPS response, the sample
+information must be recoded as described in the DESeq2 manual. Briefly, the model
+is not full rank when accounting for individual, as each individual is either in
+the disease or control group. Individual is recoded within each group, levels 
+without samples removed from the design matrix, and the LPS response in disease
+and controls contrasted to test if the treatment effect is different across 
+groups. 
+
+```{r lps-response-disease}
+# to account for the effect of disease status
+# two disease status groups with distinct individuals
+tmp <- cbind(lps.dds$Disease, lps.dds$PatientNumber)
+# 10 patients in control, 9 in disease
+# update disease to 1:9 and control 1:10
+ind.n <- tmp[, 2]
+ind.n[which(tmp[, 1] == 1)] <- as.numeric(as.factor(ind.n[which(tmp[, 1] == 1)]))
+ind.n[which(tmp[, 1] == 2)] <- as.numeric(as.factor(ind.n[which(tmp[, 1] == 2)]))
+
+lps.dds.dis <- lps.dds
+lps.dds.dis$ind.n <- as.factor(as.character(ind.n))
+
+design(lps.dds.dis) <- ~ Disease + Disease:ind.n + Disease:SampleType
+m1 <- model.matrix(design(lps.dds.dis), lps.dds.dis@colData)
+all.zero <- apply(m1, 2, function(x) all(x==0))
+idx <- which(all.zero)
+m1 <- m1[, -idx]
+unname(m1)
+
+# analysis
+lps.dds.dis <- DESeq(lps.dds.dis, parallel=TRUE, full=m1, betaPrior=FALSE)
+
+# results
+lps.dis.res <- results(lps.dds.dis, parallel=TRUE, 
+                   # lfcThreshold=log(1.5, 2), altHypothesis="greaterAbs",
+                   independentFiltering=TRUE, alpha=0.05,
+                   contrast=list("DiseaseT2D.SampleTypeCD14_LPS",
+                                 "DiseaseControl.SampleTypeCD14_LPS"))
+
+lps.dis.res <- lps.dis.res[(complete.cases(lps.dis.res)), ]
+summary(lps.dis.res)
+```
+
+There are no significant genes detected. 
+
+### Comparison to healthy volunteers
+
+These results are positively correlated with the CD14 LPS response from Ben's
+healthy volunteer data.
 
 Due to the different platforms used, for this comparison mean log fold changes 
 were calculated for each gene.
@@ -403,41 +563,41 @@ correlation.plot <- function (limma.1, limma.2, name.1 = "A", name.2 = "B",
 
 fairfax <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/FairfaxScienceLPSDE.txt",
                       stringsAsFactors=FALSE)
-fairfax$Gene <- fairfax$Symbol
-
-fairfax$log2FoldChange <- fairfax$logFC.LPS2.vs.Naive
-fairfax$padj <- fairfax$adj.P.Val.LPS2.vs.Naive
-fairfax.lps <- fairfax[, c("Gene", "log2FoldChange", "padj")]
+fairfax.lps <- fairfax[, c("Symbol", "logFC.LPS2.vs.Naive",
+                           "adj.P.Val.LPS2.vs.Naive")]
 fairfax.lps <- fairfax.lps[complete.cases(fairfax.lps), ]
+fairfax.lps$logFC.LPS2.vs.Naive <- (-fairfax.lps$logFC.LPS2.vs.Naive)
 
-fairfax.lps <- aggregate(fairfax.lps[, 2:3], by=list(fairfax.lps$Gene), FUN=mean)
-colnames(fairfax.lps)[1] <- "Gene"
-lps.de <- aggregate(lpsresOrdered[, c(3, 7)], by=list(lpsresOrdered$Gene),
+fairfax.lps <- aggregate(fairfax.lps[, 2:3], by=list(fairfax.lps$Symbol), FUN=mean)
+colnames(fairfax.lps) <- c("Gene", "log2FoldChange", "padj")
+lps.de <- aggregate(lpsresOrdered[, c(2, 6, 7)], by=list(lpsresOrdered$Gene),
                     FUN=mean)
+lps.de$Gene <- NULL
 colnames(lps.de)[1] <- "Gene"
-
+lps.de <- lps.de[complete.cases(lps.de), ]
 correlation.plot(lps.de, fairfax.lps, "Pilot", "Fairfax 2h", "LPS Response")
 ```
 
 ```{r lps24-correlation}
-fairfax$log2FoldChange <- fairfax$logFC.LPS24.vs.Naive
-fairfax$padj <- fairfax$adj.P.Val.LPS24h.vs.Naive
-fairfax.lps <- fairfax[, c("Gene", "log2FoldChange", "padj")]
+fairfax.lps <- fairfax[, c("Symbol", "logFC.LPS24.vs.Naive",
+                           "adj.P.Val.LPS24h.vs.Naive")]
 fairfax.lps <- fairfax.lps[complete.cases(fairfax.lps), ]
+fairfax.lps$logFC.LPS24.vs.Naive <- (-fairfax.lps$logFC.LPS24.vs.Naive)
 
-fairfax.lps <- aggregate(fairfax.lps[, 2:3], by=list(fairfax.lps$Gene), FUN=mean)
-colnames(fairfax.lps)[1] <- "Gene"
-lps.de <- aggregate(lpsresOrdered[, c(3, 7)], by=list(lpsresOrdered$Gene),
-                    FUN=mean)
-colnames(lps.de)[1] <- "Gene"
-
+fairfax.lps <- aggregate(fairfax.lps[, 2:3], by=list(fairfax.lps$Symbol), FUN=mean)
+colnames(fairfax.lps) <- c("Gene", "log2FoldChange", "padj")
 correlation.plot(lps.de, fairfax.lps, "Pilot", "Fairfax 24h", "LPS Response")
 ```
 
-DESeq2 won't let me include disease in the model in the normal way. What I could 
-do instead is to combine patient and disease as a single factor, but I don't want
-to do this as it then doesn't acknowledge the grouping by disease status. Instead
-I have analysed the patients and controls separately:
+
+
+
+
+
+
+
+
+I have also analysed the patients and controls separately:
 
 ```{r lps-response-controls}
 lps.con.dds <- dds[, dds@colData@listData$SampleType %in% c("CD14_PBS",
@@ -570,20 +730,7 @@ correlation.plot(lps.de, lps.t2d.de, "Pilot", "Pilot - T2D", "LPS Response")
 
 Pathway analysis using XGR of LPS response
 
-```{r lps-xgr}
-RData.location <- "http://galahad.well.ox.ac.uk/bigdata"
-
-# All pilot data
-data <- lpsresOrdered$Gene[lpsresOrdered$sig == "Sig DE"]
-background <- lpsresOrdered$Gene
-eTerm_LPSAll_GOBP_lea <- xEnricherGenes(data=data, background=background,
-                                        ontology="GOBP",
-                                        ontology.algorithm="lea",
-                                        RData.location=RData.location)
-bp_LPSAll_GOBP_lea <- xEnrichBarplot(eTerm_LPSAll_GOBP_lea,
-                                   displayBy="fdr", top_num=10)
-bp_LPSAll_GOBP_lea
-
+```{r lps-xgr-hv}
 # Fairfax
 data <- fairfax$Symbol[fairfax$adj.P.Val.LPS2.vs.Naive < 0.05 &
                          abs(fairfax$logFC.LPS2.vs.Naive) > log(1.5, 2)]
@@ -625,7 +772,11 @@ xEnrichCompare(list_eTerm, displayBy="fc", FDR.cutoff=0.01) +
   theme(axis.text.y=element_text(size=10))
 ```
 
+
+### Overlap with HV
+
 ### Modifier effect of MET
+
 
 ### T2D vs Controls
 
@@ -679,6 +830,7 @@ ggplot(d, aes(x=Disease, y=count, group=PatientNumber, col=PatientNumber)) +
   geom_line()
 ```
 
+
 ### Repeat visit
 
 Individuals without a repeat visit are excluded.
@@ -730,3 +882,10 @@ ggplot(d, aes(x=Repeat.Sample, y=count, group=PatientNumber, col=PatientNumber))
   theme_bw() +
   geom_line()
 ```
+
+
+### CD14 vs CD8
+
+### PBMC vs Paxgene
+
+### Modifying effect of age and BMI
