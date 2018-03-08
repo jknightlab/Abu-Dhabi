@@ -43,3 +43,6 @@ A matrix of unnormalised feature counts was made using the
 
 Differential expression analysis was then performed using DESeq2
 [Pilot_RNA_seq_results.Rmd](PilotData/Pilot_RNA_seq_results.Rmd)
+
+### PaxGene Cohort
+
