@@ -1,0 +1,1167 @@
+---
+title: "Abu Dhabi RNA-seq project: analysis of pilot data set excluding mixups"
+author: "Katie Burnham"
+date: '`r Sys.Date()`'
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE)
+
+library(kburnhamfunctions)
+# install.packages("Vennerable", repos = "http://R-Forge.R-project.org")
+
+# Vennerable needs graph and RBGL, from bioconductor repository
+# source("http://bioconductor.org/biocLite.R")
+# biocLite("graph")
+# biocLite("RBGL")
+
+# Those packages also need reshape and gtools
+library(reshape)
+library(gtools)
+library(Vennerable)
+
+# Differential expression analysis
+library(DESeq2)
+
+# plotting figures
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(gridExtra)
+
+# normalisation
+library(vsn)
+
+# heatmap
+library(pheatmap)
+library(RColorBrewer)
+
+# parallel computing
+library(BiocParallel)
+register(SnowParam(4))
+
+# look up gene ids
+library(biomaRt)
+
+# pathway analysis
+library(XGR)
+```
+
+This summarises analysis of the pilot RNA-seq data from the Abu Dhabi cohort. 
+This comprises samples from 19 individuals (10 controls, 9 with type 2 diabetes).
+7 of these have follow up samples taken at a repeat visit. For each individual 
+and time point, there are 8 different sample types:
+
+- Paxgene
+
+- PBMCs
+
+- CD8
+
+- CD14
+
+- CD14_PBS
+
+- CD14_LPS
+
+- CD14_MET
+
+- CD14_MET_LPS
+
+This gives a total of 208 samples.
+
+**Data locations:**
+
+Fastq files: /well/jknight/Kate/RNAseq/P160233-REX
+
+Sample information in the README file
+
+Mapping of the sequencing data to the human transcriptome was done by Core 
+Bioinformatics using hisat against the human_glk_v37.ERCC reference (Options 
+used: Paired reads, deduplicated with Picard, no multiple matches) and features
+counted using Subread.
+
+###  Input Data
+
+Full count matrix: /well/jknight/Kate/RNASeq/P160233-REX/Pilot-count-data.txt
+
+The feature count matrix prepared using the CountMatrix.R script is read in, along
+with sample information. The value in the i-th row and the j-th column of the 
+matrix tells how many reads (or fragments, for paired-end RNA-seq) have been
+assigned to gene i in sample j. 
+
+These are not pre-normalized for sequencing depth/library size, as DESeq2's
+statistical model is most powerful when applied to un-normalized counts, and is
+designed to account for library size differences internally. 
+
+Check that the sample IDs match:
+
+```{r data}
+counts <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/PilotRNA-hisat-count-data.txt")
+full.s.info <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/PilotSampleInfoExpanded.txt",
+                          stringsAsFactors=F, row.names=1)
+full.s.info$PatientNumber <- as.character(full.s.info$PatientNumber)
+
+metrics <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/Dedup_QC_metric.txt")
+full.metrics <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/Full_QC_metric.txt")
+
+# check order of samples
+all(colnames(counts) == rownames(full.s.info))
+```
+
+Samples with poor mapping quality are removed, as well as potential mix-up samples
+
+```{r mapping-QC}
+metrics$SampleType <- full.s.info$SampleType[match(metrics$Sample, 
+                                                   full.s.info$SampleId)]
+metrics$Disease <- full.s.info$Disease[match(metrics$Sample, 
+                                             full.s.info$SampleId)]
+metrics$Repeat <- full.s.info$Repeat.Sample[match(metrics$Sample, 
+                                             full.s.info$SampleId)]
+metrics$Individual <- full.s.info$SampleNumber[match(metrics$Sample,
+                                                     full.s.info$SampleId)]
+
+to.rm <- as.character(metrics$Sample[metrics$Mapping.Rate < 0.4])
+mixup <- as.character(full.s.info$SampleId[full.s.info$SampleNameFull %in% 
+  c("94_CD14_LPS", "94_CD14_PBS", "148_CD14_LPS", "148_CD14_MET_LPS", 
+    "100_CD14_PBS", "100_CD14_LPS", "100_CD14_MET_LPS", "100_CD14_MET",
+    "102_CD14_PBS", "102_CD14_LPS", "102_CD14_MET_LPS", "102_CD14_MET")])
+to.rm <- c(to.rm, mixup)  
+to.rm <- which(full.s.info$SampleId %in% to.rm)
+
+print(full.s.info$SampleNameFull[to.rm])
+```
+
+# Differential expression analysis
+
+```{r convert-to-DESeq2DataSet, warning=FALSE}
+counts <- counts[, -to.rm]
+full.s.info <- full.s.info[-to.rm, ]
+
+dds <- DESeqDataSetFromMatrix(countData=counts,
+                              colData=full.s.info,
+                              design= ~ SampleType + Disease)
+dds$Disease <- relevel(dds$Disease, ref = "Control")
+dds
+```
+
+The gene symbols are looked up using biomaRt from their ensembl IDs.
+
+```{r genes}
+ensembl <- useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl",
+                      GRCh="37")
+genes <- getBM(attributes=c('ensembl_gene_id', 
+                            'ensembl_transcript_id',
+                            'hgnc_symbol', 
+                            'chromosome_name', 
+                            'start_position',
+                            'end_position',
+                            'gene_biotype'), 
+                   filters = 'ensembl_gene_id', 
+                   values =rownames(counts),
+                   mart = ensembl)
+
+featureData <- data.frame(Ensembl=rownames(counts), 
+                          Gene=genes$hgnc_symbol[match(rownames(counts),
+                                                       genes$ensembl_gene_id)],
+                          GeneType=genes$gene_biotype[match(rownames(counts),
+                                                       genes$ensembl_gene_id)])
+mcols(dds) <- DataFrame(mcols(dds), featureData)
+```
+
+### Pre-filtering
+
+The genes identified in this data set may be classified as follows:
+
+```{r pre-filtering}
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+dds
+table(mcols(dds)$GeneType)
+```
+
+## Exploratory analysis and visualisation
+
+These plots show the relationship between mean expression and sd before and after
+normalisation.
+
+```{r vst, fig.height=3}
+vsd <- vst(dds, blind=TRUE)
+
+# Compare before and after
+p1 <- meanSdPlot(assay(dds), plot=FALSE)
+p1 <- p1$gg + theme_bw()
+p2 <- meanSdPlot(assay(vsd), plot=FALSE)
+p2 <- p2$gg + theme_bw()
+
+grid.arrange(p1, p2, nrow=1)
+
+pcaData <- plotPCA(vsd, intgroup = c("Disease", "SampleType"), returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+```
+
+PCA is then used to explore the relationship between the samples. This shows that
+a large proportion of the variance (`r paste0(percentVar[1], "% variance")`) is
+explained by PC1, which separates the naive and treated cells and also the
+non-cultured CD14 cells from the other cell types. There are no clear differences
+between diabetes and control samples. Repeat samples were thought to be of poorer
+quality, but this does not seem to have an impact on the clustering here.
+
+```{r pca}
+ggplot(pcaData, aes(x = PC1, y = PC2, color = SampleType, shape = Disease)) +
+  geom_point(size =3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  theme_bw()
+```
+
+A second PCA restricted to the cultured (and treated) CD14s shows the general
+separation between LPS treated and non-LPS treated cells. 
+
+```{r pca-treated}
+vsd.treat <- vsd[, vsd$SampleType %in% c("CD14_PBS", "CD14_LPS", 
+                                         "CD14_MET", "CD14_MET_LPS")]
+vsd.treat$SampleType <- droplevels(vsd.treat$SampleType)
+pcaData <- plotPCA(vsd.treat, 
+                   intgroup = c("Disease", "SampleType", "PatientNumber", 
+                                "SampleNumber", "Repeat.Sample"), 
+                   returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+ggplot(pcaData, aes(x=PC1, y=PC2, color=SampleType, shape=Disease)) +
+  geom_point(size =3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  theme_bw()
+```
+
+```{r pc1}
+ggplot(pcaData, aes(x=SampleType, y=PC1, col=PatientNumber, group=SampleNumber, 
+                    shape=Repeat.Sample)) +
+  geom_line() +
+  geom_point() +
+  theme_bw() +
+  scale_colour_discrete(guide=FALSE)
+```
+
+These patterns are also seen by clustering the distance matrix for all samples,
+and for just the cultured CD14s:
+
+```{r corr-matrix-1, fig.height=15, message=FALSE}
+sampleDists <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDists)
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+annotation_row=data.frame(vsd@colData@listData[c("Disease", "SampleType")])
+rownames(annotation_row) <- rownames(sampleDistMatrix)
+
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         annotation_row=annotation_row,
+         col = colors)
+```
+
+```{r corr-matrix-2, fig.height=10, message=FALSE}
+sampleDists <- dist(t(assay(vsd.treat)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- vsd.treat$SampleNameFull
+colnames(sampleDistMatrix) <- NULL
+annotation_row=data.frame(vsd.treat@colData@listData[c("Disease", "SampleType")])
+rownames(annotation_row) <- rownames(sampleDistMatrix)
+
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         annotation_row=annotation_row,
+         col = colors)
+```
+
+## Differential expression analysis
+
+### LPS response
+
+The CD14 cells treated with LPS are compared to those treated with PBS (controls
+for culturing/treatment), taking account of patient in the model and excluding 
+the 2nd visit samples. The independent filtering optimisation is visualised below
+and the differential expression results summarised:
+
+```{r lps-response, message=FALSE}
+dds$PatientNumber <- as.factor(dds$PatientNumber)
+design(dds) <- ~ PatientNumber + SampleType
+
+# design
+lps.dds <- dds[, dds@colData@listData$Repeat.Sample == FALSE]
+# 38 samples remaining (19 individuals, 2 samples each)
+lps.dds@colData <- droplevels(lps.dds@colData)
+lps.dds$SampleType <- relevel(lps.dds$SampleType, ref = "CD14_PBS")
+lps.dds$PatientNumber <- as.factor(lps.dds$PatientNumber)
+table(lps.dds$SampleType)
+
+# analysis
+lps.dds <- DESeq(lps.dds, parallel=TRUE)
+
+# results
+lps.res <- results(lps.dds, parallel=TRUE,
+                   contrast=c("SampleType", "CD14_LPS", "CD14_PBS"),
+                   independentFiltering=TRUE, alpha=0.05)
+lps.res$Gene <- mcols(lps.dds)$Gene
+
+plot(metadata(lps.res)$filterNumRej,
+     type="b", ylab="Number of rejections",
+     xlab="Quantiles of filter", pch=16)
+lines(metadata(lps.res)$lo.fit, col="red")
+abline(v=metadata(lps.res)$filterTheta)
+
+lps.res.LFC <- lfcShrink(lps.dds, 
+                         contrast=c("SampleType", "CD14_LPS", "CD14_PBS"),
+                         parallel=TRUE)
+lps.res$log2FoldChange <- lps.res.LFC$log2FoldChange
+lps.res$lfcSE <- lps.res.LFC$lfcSE
+lpsresOrdered <- lps.res[order(lps.res$padj), ]
+lpsresOrdered <- lpsresOrdered[(complete.cases(lpsresOrdered)), ]
+summary(lpsresOrdered)
+res05 <- results(lps.dds, alpha=0.05)
+```
+
+`r sum(lpsresOrdered$padj < 0.05, na.rm=TRUE)` transcripts are differentially
+expressed at FDR <0.05. 
+
+The MA plot shows that differential expression is not overly dependent on mean 
+expression levels, and that the fold changes are centered around 0. 
+
+```{r lps-response-maplot}
+r.lfc <- range(lps.res.LFC$log2FoldChange, na.rm=TRUE)
+plotMA(lps.res.LFC, ylim=r.lfc, main="MA Plot")
+abline(h=c(-log(1.5, 2), log(1.5, 2)), col="dodgerblue", lwd=2)
+```
+
+The dispersion estimates are typical, with the final estimates shrunk from the
+gene-wise estimates towards the fitted estimates. 
+
+```{r lps-response-dispplot}
+plotDispEsts(lps.dds, main="Dispersion plot")
+```
+
+There are no outlying count values, and a similar distribution is seen across 
+samples for Cook's distance.
+
+```{r lps-response-cooksplot}
+boxplot(log10(assays(lps.dds)[["cooks"]]), range=0, las=2, main="Cook's distance")
+# No outliers 
+```
+
+The p value histogram is as expected, with a uniform distribution for 
+non-significant genes and a spike on the left hand side for biologically 
+different genes.
+
+```{r lps-response-pvalhist}
+hist(lpsresOrdered$pvalue, breaks=100, main="Histogram of filtered p values",
+     xlab="P value")
+abline(v=0.05, col="red", lty=2)
+```
+
+The top ten most significantly differentially expressed genes are plotted across
+samples. 
+
+```{r lps-response-de-plots, fig.height=10}
+# Top DE genes
+top.10 <- order(lps.res$padj)[1:10]
+de.plot.list <- list()
+for(j in 1:10){
+  i <- top.10[j]
+  d <- plotCounts(lps.dds, gene=i, 
+                intgroup=c("SampleType", "Disease", "PatientNumber"),
+                returnData=TRUE)
+  d <- subset(d, SampleType %in% c("CD14_LPS", "CD14_PBS"))
+  gene.name <- as.character(mcols(lps.dds)$Gene[i])
+  if(gene.name == "") gene.name <- as.character(mcols(lps.dds)$Ensembl[i])
+  de.plot.list[[j]] <- ggplot(d, aes(x=SampleType, y=count, color=Disease,
+                                     group=PatientNumber)) + 
+    geom_point() + 
+    scale_y_log10() +
+    theme_bw() +
+    geom_line() +
+    ylab(gene.name)
+}
+
+grid.arrange(grobs=de.plot.list, ncol=2)
+```
+
+This volcano plot gives an overview of the results, with some of the most
+significantly differentially expressed genes labelled and a positive fold change
+indicating higher expression in the LPS treated cells. 
+
+```{r lps-response-vpplot}
+lpsresOrdered$sig <- ifelse((lpsresOrdered$padj < 0.05 & 
+                            abs(lpsresOrdered$log2FoldChange) >= log(1.5, 2)), 
+                          "Sig DE", "Not Sig")
+ggplot(data.frame(lpsresOrdered), aes(log2FoldChange, -log10(padj))) +
+  geom_point(aes(col=sig)) +
+  scale_color_manual(values=c("grey", "red")) +
+  ylab("-log10(adjusted p value") +
+  xlab("log2(fold change") +
+  ggtitle("LPS vs PBS CD14") +
+  theme_bw() +
+  geom_text_repel(data=subset(data.frame(lpsresOrdered), padj<5e-100),
+                  aes(label=Gene))
+```
+
+Pathway enrichment analysis is performed with XGR, using the lea algorithm to 
+account for hierarchical relationships between terms and the GOBP ontology. The
+specified background is all genes tested for differential expression after
+filtering. The ten terms most significantly enriched in the list of differentially
+expressed genes are shown:
+
+```{r lps-xgr, message=FALSE}
+RData.location <- "http://galahad.well.ox.ac.uk/bigdata"
+
+data <- unique(as.character(lpsresOrdered$Gene[lpsresOrdered$sig == "Sig DE"]))
+background <- unique(as.character(lpsresOrdered$Gene))
+eTerm_LPSAll_GOBP_lea <- xEnricherGenes(data=data, background=background,
+                                        ontology="GOBP",
+                                        ontology.algorithm="lea",
+                                        RData.location=RData.location,
+                                        verbose=FALSE)
+bp_LPSAll_GOBP_lea <- xEnrichBarplot(eTerm_LPSAll_GOBP_lea,
+                                   displayBy="fdr", top_num=10)
+bp_LPSAll_GOBP_lea
+```
+
+### Comparison to healthy volunteers
+
+These results are positively correlated with the CD14 LPS response from the 
+Fairfax et al healthy volunteer data (Science 2014). Due to the different
+platforms used (microarray vs RNA-seq), for this comparison mean log fold changes
+were calculated for each gene and the value for the Fairfax cohort plotted against
+that for the Abu Dhabi cohort. The Fairfax data included a 2 hour and a 24 hour
+stimulation of CD14s with LPS, so the Abu Dhabi results (6 hour treatment with 
+LPS) are compared to both:
+
+```{r lps2-correlation, warning=FALSE}
+correlation.plot <- function (limma.1, limma.2, name.1 = "A", name.2 = "B", 
+          main.title = "Correlation Plot", 
+          key = TRUE, col.1 = "darkgreen", col.2 = "gold", col.both = "blue", 
+  labels = FALSE) {
+  
+  limma.1 <- limma.1[complete.cases(limma.1), ]
+  limma.2 <- limma.2[complete.cases(limma.2), ]
+  
+  limma.2 <- limma.2[which(limma.2$Gene %in% limma.1$Gene), 
+    ]
+  limma.1 <- limma.1[which(limma.1$Gene %in% limma.2$Gene), 
+    ]
+  limma.2 <- limma.2[match(limma.1$Gene, limma.2$Gene), 
+    ]
+  
+  plot.range.x <- max(abs(c(limma.1$log2FoldChange)))
+  plot.range.y <- max(abs(c(limma.2$log2FoldChange)))
+  
+  corr.plot.colours <- rep("gray", nrow(limma.1))
+  for (i in 1:nrow(limma.1)) {
+    if (abs(limma.1$log2FoldChange[i]) > log2(1.5) & 
+        limma.1$padj[i] < 0.05 & 
+        abs(limma.2$log2FoldChange[i]) > log2(1.5) & 
+        limma.2$pad[i] < 0.05) {
+      corr.plot.colours[i] <- col.both
+    }
+    else if ((abs(limma.1$log2FoldChange[i]) > log2(1.5) & 
+              limma.1$padj[i] < 0.05) & 
+             (abs(limma.2$log2FoldChange[i]) < log2(1.5) | limma.2$padj[i] > 0.05))
+      {
+      corr.plot.colours[i] <- col.1
+    }
+    else if ((abs(limma.1$log2FoldChange[i]) < log2(1.5) | 
+              limma.1$padj[i] > 0.05) & 
+             (abs(limma.2$log2FoldChange[i]) > log2(1.5) & limma.2$padj[i] < 0.05))
+      {
+      corr.plot.colours[i] <- col.2
+    }
+    if (limma.1$log2FoldChange[i] * limma.2$log2FoldChange[i] < 0) {
+      if (abs(limma.1$log2FoldChange[i]) > log2(1.5) & limma.1$padj[i] < 0.05 &
+          abs(limma.2$log2FoldChange[i]) > log2(1.5) & limma.2$padj[i] < 0.05) 
+        {
+        corr.plot.colours[i] <- "red"
+      }
+    }
+  }
+  
+  plot(limma.1$log2FoldChange, limma.2$log2FoldChange, 
+       xlab = paste("Log2 Fold Change", name.1), 
+       ylab = paste("Log2 Fold Change", name.2), 
+       main = main.title, 
+       xlim = c(-plot.range.x, plot.range.x), 
+       ylim = c(-plot.range.y, plot.range.y), 
+       col = corr.plot.colours, pch = 20)
+  
+  text(x = (plot.range.x - 1), y = -(plot.range.y - 1), paste("Pearson's r =", 
+    format(cor(limma.1$log2FoldChange, limma.2$log2FoldChange), digits = 3)))
+  corr.test <- cor.test(limma.1$log2FoldChange, limma.2$log2FoldChange)
+  if (as.numeric(corr.test$p.value) > 0) {
+    text(x = (plot.range.x - 1), y = -(plot.range.y - 0.7), 
+      paste("p =", format(corr.test$p.value, digits = 3)))
+  }
+  else {
+    text(x = (plot.range.x - 1), y = -(plot.range.y - 0.7), 
+      "P < 2.2 x 10-16")
+  }
+  if (key == TRUE) {
+    legend("topleft", c("DE in Both", paste("DE in", name.1), 
+      paste("DE in", name.2), "DE in Opposite Directions", 
+      "Not DE"), bty = "n", col = c(col.both, col.1, col.2, 
+      "red", "gray"), pch = rep(20, 4))
+  }
+  abline(h = 0)
+  abline(v = 0)
+  if (labels == TRUE) {
+    text(limma.2$Gene, x = limma.1$log2FoldChange, 
+         y = limma.2$log2FoldChange + 0.1, cex = 0.8)
+  }
+}
+
+fairfax <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/FairfaxScienceLPSDE.txt",
+                      stringsAsFactors=FALSE)
+fairfax.lps <- fairfax[, c("Symbol", "logFC.LPS2.vs.Naive",
+                           "adj.P.Val.LPS2.vs.Naive")]
+fairfax.lps <- fairfax.lps[complete.cases(fairfax.lps), ]
+fairfax.lps$logFC.LPS2.vs.Naive <- (-fairfax.lps$logFC.LPS2.vs.Naive)
+
+fairfax.lps <- aggregate(fairfax.lps[, 2:3], by=list(fairfax.lps$Symbol), 
+                         FUN=mean)
+colnames(fairfax.lps) <- c("Gene", "log2FoldChange", "padj")
+lps.de <- aggregate(lpsresOrdered[, c(2, 6, 7)], by=list(lpsresOrdered$Gene),
+                    FUN=mean)
+lps.de$Gene <- NULL
+colnames(lps.de)[1] <- "Gene"
+lps.de <- lps.de[complete.cases(lps.de), ]
+lps.de$Gene <- as.character(lps.de$Gene)
+correlation.plot(lps.de, fairfax.lps, "Pilot", "Fairfax 2h", "LPS Response")
+```
+
+```{r lps24-correlation}
+fairfax.lps <- fairfax[, c("Symbol", "logFC.LPS24.vs.Naive",
+                           "adj.P.Val.LPS24h.vs.Naive")]
+fairfax.lps <- fairfax.lps[complete.cases(fairfax.lps), ]
+fairfax.lps$logFC.LPS24.vs.Naive <- (-fairfax.lps$logFC.LPS24.vs.Naive)
+
+fairfax.lps <- aggregate(fairfax.lps[, 2:3], by=list(fairfax.lps$Symbol), 
+                         FUN=mean)
+colnames(fairfax.lps) <- c("Gene", "log2FoldChange", "padj")
+correlation.plot(lps.de, fairfax.lps, "Pilot", "Fairfax 24h", "LPS Response")
+```
+
+#### Disease status and the LPS response
+
+In order to test for an effect of disease status on the LPS response, the sample
+information must be recoded (as described in the DESeq2 manual). Briefly, the
+model is not full rank when accounting for individual, as each individual is
+either in the disease or control group. Individual is recoded within each group,
+levels without samples removed from the design matrix, and the LPS response in
+disease and controls contrasted to test if the treatment effect is different
+across groups. There is 1 significant gene detected; however, the plot shows
+that this might be highly distorted by one sample in the control group (112):
+
+```{r lps-response-disease, message=FALSE}
+# to account for the effect of disease status
+# two disease status groups with distinct individuals
+tmp <- cbind(lps.dds$Disease, lps.dds$PatientNumber)
+# 10 patients in control, 9 in disease
+# update disease to 1:9 and control 1:10
+ind.n <- tmp[, 2]
+ind.n[which(tmp[, 1] == 1)] <- as.numeric(as.factor(ind.n[which(tmp[, 1] == 1)]))
+ind.n[which(tmp[, 1] == 2)] <- as.numeric(as.factor(ind.n[which(tmp[, 1] == 2)]))
+
+lps.dds.dis <- lps.dds
+lps.dds.dis$ind.n <- as.factor(as.character(ind.n))
+
+design(lps.dds.dis) <- ~ Disease + Disease:ind.n + Disease:SampleType
+m1 <- model.matrix(design(lps.dds.dis), lps.dds.dis@colData)
+all.zero <- apply(m1, 2, function(x) all(x==0))
+idx <- which(all.zero)
+m1 <- m1[, -idx]
+
+# analysis
+lps.dds.dis <- DESeq(lps.dds.dis, parallel=TRUE, full=m1, betaPrior=FALSE)
+
+# results
+lps.dis.res <- results(lps.dds.dis, parallel=TRUE, 
+                   # lfcThreshold=log(1.5, 2), altHypothesis="greaterAbs",
+                   independentFiltering=TRUE, alpha=0.05,
+                   contrast=list("DiseaseT2D.SampleTypeCD14_LPS",
+                                 "DiseaseControl.SampleTypeCD14_LPS"))
+lps.dis.res$Gene <- mcols(lps.dds.dis)$Gene
+lps.dis.res <- lps.dis.res[(complete.cases(lps.dis.res)), ]
+summary(lps.dis.res)
+lps.dis.res[lps.dis.res$padj < 0.05, ]
+
+plot.list <- list()
+
+for(i in 1:nrow(lps.dis.res[lps.dis.res$padj < 0.05, ])){
+  gene <- rownames(lps.dis.res[lps.dis.res$padj < 0.05, ])[i]
+  d <- plotCounts(lps.dds.dis, gene=gene, 
+                intgroup=c("SampleType", "Disease", "PatientNumber"),
+                returnData=TRUE)
+  d <- subset(d, SampleType %in% c("CD14_LPS", "CD14_PBS"))
+  gene.name <- as.character(mcols(lps.dds)$Gene[which(rownames(lps.dds) == gene)])
+  if(gene.name == "") gene.name <- as.character(mcols(lps.dds)$Ensembl[which(rownames(lps.dds) == gene)])
+  plot.list[[i]] <- ggplot(d, aes(x=SampleType, y=count, color=Disease,
+                                     group=PatientNumber)) + 
+    geom_point(position=position_dodge(0.1)) + 
+    scale_y_log10() +
+    theme_bw() +
+    geom_line(position=position_dodge(0.1)) +
+    ylab(gene.name) +
+  facet_wrap(~ Disease)
+}
+
+grid.arrange(grobs=plot.list, ncol=2)
+```
+
+I have also analysed the patients and controls separately:
+
+```{r lps-response-controls, message=FALSE, warning=FALSE}
+lps.con.dds <- dds[, dds@colData@listData$SampleType %in% c("CD14_PBS",
+                                                            "CD14_LPS")]
+lps.con.dds <- lps.con.dds[, lps.con.dds@colData@listData$Repeat.Sample == FALSE]
+lps.con.dds <- lps.con.dds[, lps.con.dds@colData@listData$Disease == "Control"]
+# 20 samples remaining (10 individuals, 2 samples each)
+lps.con.dds@colData <- droplevels(lps.con.dds@colData)
+lps.con.dds$PatientNumber <- as.factor(lps.con.dds$PatientNumber)
+lps.con.dds$SampleType <- relevel(lps.con.dds$SampleType, ref="CD14_PBS")
+design(lps.con.dds) <- ~ PatientNumber + SampleType
+table(lps.con.dds$SampleType)
+
+# analysis
+lps.con.dds <- DESeq(lps.con.dds, parallel=TRUE)
+
+# results
+lps.con.res <- results(lps.con.dds, parallel=TRUE, 
+                       independentFiltering=TRUE, alpha=0.05)
+lps.con.res$Gene <- mcols(lps.con.dds)$Gene
+
+plot(metadata(lps.con.res)$filterNumRej,
+     type="b", ylab="Number of rejections",
+     xlab="Quantiles of filter", pch=16)
+lines(metadata(lps.con.res)$lo.fit, col="red")
+abline(v=metadata(lps.con.res)$filterTheta)
+
+lps.con.res.LFC <- lfcShrink(lps.con.dds, coef=10, parallel=TRUE)
+lps.con.res$log2FoldChange <- lps.con.res.LFC$log2FoldChange
+lps.con.res$lfcSE <- lps.con.res.LFC$lfcSE
+lpsconresOrdered <- lps.con.res[order(lps.con.res$padj), ]
+lpsconresOrdered <- lpsconresOrdered[(complete.cases(lpsconresOrdered)), ]
+summary(lpsconresOrdered)
+
+# QC plots
+r.lfc <- range(lps.con.res.LFC$log2FoldChange, na.rm=TRUE)
+plotMA(lps.con.res.LFC, ylim=r.lfc, main="MA Plot")
+abline(h=c(-log(1.5, 2), log(1.5, 2)), col="dodgerblue", lwd=2)
+
+plotDispEsts(lps.con.dds, main="Dispersion plot")
+
+boxplot(log10(assays(lps.con.dds)[["cooks"]]), range=0, las=2, 
+        main="Cook's distance")
+# No outliers 
+
+hist(lpsconresOrdered$pvalue, breaks=100, main="P value")
+
+lps.con.de <- as.data.frame(aggregate(lpsconresOrdered[, c(2, 6, 7)],
+                                      by=list(lpsconresOrdered$Gene),
+                                      FUN=mean))
+lps.con.de$Gene <- NULL
+colnames(lps.con.de)[1] <- "Gene"
+lps.con.de <- lps.con.de[complete.cases(lps.con.de), ]
+lps.con.de$Gene <- as.character(lps.con.de$Gene)
+correlation.plot(lps.de, lps.con.de, "Pilot", "Pilot - Controls", "LPS Response")
+```
+
+```{r lps-response-t2d, warning=FALSE, message=FALSE}
+lps.t2d.dds <- dds[, dds@colData@listData$SampleType %in% c("CD14_PBS",
+                                                            "CD14_LPS")]
+lps.t2d.dds <- lps.t2d.dds[, lps.t2d.dds@colData@listData$Repeat.Sample == FALSE]
+lps.t2d.dds <- lps.t2d.dds[, lps.t2d.dds@colData@listData$Disease == "T2D"]
+# 18 samples remaining (9 individuals, 2 samples each)
+lps.t2d.dds@colData <- droplevels(lps.t2d.dds@colData)
+lps.t2d.dds$SampleType <- relevel(lps.t2d.dds$SampleType, ref="CD14_PBS")
+lps.t2d.dds$Disease <- droplevels(lps.t2d.dds$Disease)
+lps.t2d.dds$PatientNumber <- as.factor(lps.t2d.dds$PatientNumber)
+design(lps.t2d.dds) <- ~ PatientNumber + SampleType
+table(lps.t2d.dds$SampleType)
+
+# analysis
+lps.t2d.dds <- DESeq(lps.t2d.dds, parallel=TRUE)
+
+# results
+lps.t2d.res <- results(lps.t2d.dds, parallel=TRUE, 
+                       independentFiltering=TRUE, alpha=0.05)
+lps.t2d.res$Gene <- mcols(lps.t2d.dds)$Gene
+
+plot(metadata(lps.t2d.res)$filterNumRej,
+     type="b", ylab="Number of rejections",
+     xlab="Quantiles of filter", pch=16)
+lines(metadata(lps.t2d.res)$lo.fit, col="red")
+abline(v=metadata(lps.t2d.res)$filterTheta)
+
+lps.t2d.res.LFC <- lfcShrink(lps.t2d.dds, coef=8, parallel=TRUE)
+lps.t2d.res$log2FoldChange <- lps.t2d.res.LFC$log2FoldChange
+lps.t2d.res$lfcSE <- lps.t2d.res.LFC$lfcSE
+lpst2dresOrdered <- lps.t2d.res[order(lps.t2d.res$padj), ]
+lpst2dresOrdered <- lpst2dresOrdered[(complete.cases(lpst2dresOrdered)), ]
+summary(lpst2dresOrdered)
+
+# QC plots
+r.lfc <- range(lps.t2d.res.LFC$log2FoldChange, na.rm=TRUE)
+plotMA(lps.t2d.res.LFC, ylim=r.lfc, main="MA plot")
+abline(h=c(-log(1.5, 2), log(1.5, 2)), col="dodgerblue", lwd=2)
+
+plotDispEsts(lps.t2d.dds, main="Dispersion plot")
+
+boxplot(log10(assays(lps.t2d.dds)[["cooks"]]), range=0, las=2,
+        main="Cook's distance")
+# No outliers 
+
+hist(lpst2dresOrdered$pvalue, breaks=100, main="P values")
+
+lps.t2d.de <- as.data.frame(aggregate(lpst2dresOrdered[, c(2, 6, 7)],
+                                      by=list(lpst2dresOrdered$Gene),
+                                      FUN=mean))
+lps.t2d.de$Gene <- NULL
+colnames(lps.t2d.de)[1] <- "Gene"
+lps.t2d.de <- lps.t2d.de[complete.cases(lps.t2d.de), ]
+lps.t2d.de$Gene <- as.character(lps.t2d.de$Gene)
+correlation.plot(lps.de, lps.t2d.de, "Pilot", "Pilot - T2D", "LPS Response")
+correlation.plot(lps.con.de, lps.t2d.de, 
+                 "Controls", "T2D", "LPS Response")
+```
+
+Pathway analysis using XGR of LPS response in the different data sets:
+
+```{r lps-xgr-hv, fig.height=12, message=FALSE}
+# Fairfax
+data <- fairfax$Symbol[fairfax$adj.P.Val.LPS2.vs.Naive < 0.05 &
+                         abs(fairfax$logFC.LPS2.vs.Naive) > log(1.5, 2)]
+background <- fairfax$Symbol
+eTerm_LPS2_GOBP_lea <- xEnricherGenes(data=data, background=background,
+                                      ontology="GOBP",
+                                      ontology.algorithm="lea",
+                                     RData.location=RData.location,
+                                     verbose=FALSE)
+
+# Compare
+list_eTerm <- list(eTerm_LPSAll_GOBP_lea, eTerm_LPS2_GOBP_lea)
+names(list_eTerm) <- c('Abu Dhabi', 'Fairfax')
+xEnrichCompare(list_eTerm, displayBy="fc", FDR.cutoff=0.001) + 
+  theme(axis.text.y=element_text(size=10))
+
+# Controls
+data <- as.character(lpsconresOrdered$Gene[lpsconresOrdered$padj < 0.05 &
+                              abs(lpsconresOrdered$log2FoldChange) > log(1.5, 2)])
+background <- as.character(lpsconresOrdered$Gene)
+eTerm_LPSControl_GOBP_lea <- xEnricherGenes(data=data, background=background,
+                                          ontology="GOBP",
+                                          ontology.algorithm="lea",
+                                          RData.location=RData.location,
+                                          verbose=FALSE)
+
+# T2D
+data <- as.character(lpst2dresOrdered$Gene[lpst2dresOrdered$padj < 0.05 &
+                              abs(lpst2dresOrdered$log2FoldChange) > log(1.5, 2)])
+background <- as.character(lpst2dresOrdered$Gene)
+eTerm_LPST2D_GOBP_lea <- xEnricherGenes(data=data, background=background,
+                                        ontology="GOBP",
+                                        ontology.algorithm="lea",
+                                        RData.location=RData.location,
+                                        verbose=FALSE)
+
+# Compare
+list_eTerm <- list(eTerm_LPSAll_GOBP_lea, eTerm_LPSControl_GOBP_lea,
+                   eTerm_LPST2D_GOBP_lea)
+names(list_eTerm) <- c('Abu Dhabi (All)', 'Controls', "T2D")
+xEnrichCompare(list_eTerm, displayBy="fc", FDR.cutoff=0.001) + 
+  theme(axis.text.y=element_text(size=10))
+```
+
+### Modifier effect of MET
+
+To explore the modifying effect of metformin, we want to contrast the LPS vs PBS
+response to the CD14_MET_LPS vs PBS response.
+
+```{r lps-met, message=FALSE, warning=FALSE}
+# results
+lps.met.res <- results(lps.dds, parallel=TRUE, 
+                   contrast=c("SampleType", "CD14_LPS", "CD14_MET_LPS"),
+                   independentFiltering=TRUE, alpha=0.05)
+lps.met.res$Gene <- mcols(lps.dds)$Gene
+lps.met.res.LFC <- lfcShrink(lps.dds, 
+                             contrast=c("SampleType", "CD14_LPS", "CD14_MET_LPS"),
+                             parallel=TRUE)
+lps.met.res$log2FoldChange <- lps.met.res.LFC$log2FoldChange
+lps.met.res$lfcSE <- lps.met.res.LFC$lfcSE
+lpsmetresOrdered <- lps.met.res[order(lps.met.res$padj), ]
+lpsmetresOrdered <- lpsmetresOrdered[(complete.cases(lpsmetresOrdered)), ]
+print("CD14_LPS vs CD14_MET_LPS")
+summary(lpsmetresOrdered)
+
+pbs.met.res <- results(lps.dds, parallel=TRUE, 
+                   contrast=c("SampleType", "CD14_PBS", "CD14_MET_LPS"),
+                   independentFiltering=TRUE, alpha=0.05)
+pbs.met.res$Gene <- mcols(lps.dds)$Gene
+pbs.met.res.LFC <- lfcShrink(lps.dds, 
+                             contrast=c("SampleType", "CD14_MET_LPS", "CD14_PBS"),
+                             parallel=TRUE)
+pbs.met.res$log2FoldChange <- pbs.met.res.LFC$log2FoldChange
+pbs.met.res$lfcSE <- pbs.met.res.LFC$lfcSE
+metresOrdered <- pbs.met.res[order(pbs.met.res$padj), ]
+metresOrdered <- metresOrdered[(complete.cases(metresOrdered)), ]
+print("CD14_MET_LPS vs CD14_PBS")
+summary(metresOrdered)
+
+pbs.met.de <- as.data.frame(aggregate(metresOrdered[, c(2, 6, 7)],
+                                      by=list(metresOrdered$Gene),
+                                      FUN=mean))
+pbs.met.de$Gene <- NULL
+colnames(pbs.met.de)[1] <- "Gene"
+pbs.met.de <- pbs.met.de[complete.cases(pbs.met.de), ]
+pbs.met.de$Gene <- as.character(pbs.met.de$Gene)
+correlation.plot(lps.de, pbs.met.de, "LPS Response", "MET_LPS response", 
+                 "LPS Response")
+```
+
+No genes are differentially expressed between LPS and MET_LPS.
+
+### T2D vs Controls
+
+Patients and controls are compared for each cell type. The repeat samples are
+excluded, so 10 controls are compared to 9 patients. 
+
+```{r disease, message=FALSE}
+# design
+disease.dds <- lps.dds
+# 152 samples remaining (19 individuals, 8 samples each)
+design(disease.dds) <- ~ Disease
+table(disease.dds$SampleType)
+
+# analysis
+disease.res.list <- list()
+disease.plot.list <- list()
+
+for(i in 1:8){
+  cell.type <- levels(disease.dds$SampleType)[i]
+  print(cell.type)
+  sub.dis.dds <- disease.dds[, disease.dds$SampleType == cell.type]
+  sub.dis.dds@colData <- droplevels(sub.dis.dds@colData)
+  sub.dis.dds <- DESeq(sub.dis.dds, parallel=TRUE)
+  disease.res <- results(sub.dis.dds, parallel=TRUE, 
+                   independentFiltering=TRUE, alpha=0.05)
+  disease.res$Gene <- mcols(disease.dds)$Gene
+  disease.res.LFC <- lfcShrink(sub.dis.dds, 
+                               coef=length(resultsNames(sub.dis.dds)),
+                               parallel=TRUE)
+  disease.res$log2FoldChange <- disease.res.LFC$log2FoldChange
+  disease.res$lfcSE <- disease.res.LFC$lfcSE
+  diseaseresOrdered <- disease.res[order(disease.res$padj), ]
+  diseaseresOrdered <- diseaseresOrdered[(complete.cases(diseaseresOrdered)), ]
+  disease.res.list[[i]] <- diseaseresOrdered
+  summary(diseaseresOrdered)
+  
+  diseaseresOrdered$sig <- ifelse((diseaseresOrdered$padj < 0.05 & 
+                            abs(diseaseresOrdered$log2FoldChange) >= log(1.5, 2)), 
+                          "Sig DE", "Not Sig")
+  disease.plot.list[[i]] <- ggplot(data.frame(diseaseresOrdered),
+                                   aes(log2FoldChange, -log10(padj))) +
+    geom_point(aes(col=sig)) +
+    scale_color_manual(values=c("grey", "red")) +
+    theme_bw() +
+    ggtitle(cell.type) +
+    geom_text_repel(data=subset(data.frame(diseaseresOrdered), sig == "Sig DE"),
+                    aes(label=Gene))
+}
+
+grid.arrange(grobs=disease.plot.list, ncol=3)
+```
+
+Boxplots are shown for the two genes that are DE in the Paxgene samples, and the
+one gene in the CD14 MET LPS sample. These show that the same trend is shown
+across all sample types, but significance is only reached in the Paxgene samples.
+
+_TRGV5_ encodes the T cell receptor gamma variable 5 protein. _C3AR1_ is the
+complement C3a receptor 1. C3aR-/- mice have improved insulin sensitivity and
+reduced inflammation, and were transiently resistant to diet-induced obesity
+(Mamane et al 2009). _TMEM14C_ is involved in heme biosynthesis.
+
+```{r disease-genes, warning=FALSE}
+g <- which(mcols(disease.dds)$Gene == "TRGV5")
+d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
+                intgroup=c("SampleType", "Disease"),
+                returnData=TRUE)
+ggplot(d, aes(x=Disease, y=count, color=Disease)) + 
+  geom_boxplot() +
+  geom_point(size=3) + 
+  scale_y_log10() +
+  theme_bw() +
+  ylab("TRGV5") +
+  facet_wrap(~ SampleType, nrow=2)
+
+
+g <- which(mcols(disease.dds)$Gene == "C3AR1")
+d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
+                intgroup=c("SampleType", "Disease"),
+                returnData=TRUE)
+ggplot(d, aes(x=Disease, y=count, color=Disease)) + 
+  geom_boxplot() +
+  geom_point(size=3) + 
+  scale_y_log10() +
+  theme_bw() +
+  ylab("C3AR1") +
+  facet_wrap(~ SampleType, nrow=2)
+
+g <- which(mcols(disease.dds)$Gene == "TMEM14C")
+d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
+                intgroup=c("SampleType", "Disease"),
+                returnData=TRUE)
+ggplot(d, aes(x=Disease, y=count, color=Disease)) + 
+  geom_boxplot() +
+  geom_point(size=3) + 
+  scale_y_log10() +
+  theme_bw() +
+  ylab("TMEM14C") +
+  facet_wrap(~ SampleType, nrow=2)
+```
+
+### Repeat visit
+
+Individuals without a repeat visit are excluded, and changes over time identified
+for each cell type. 
+
+NB the repeat samples were poorer quality, which could have a batch effect that
+can't be removed.
+
+```{r repeat, message=FALSE}
+repeat.inds <- names(which(table(dds$PatientNumber) == 16))
+repeat.dds <- dds[, dds@colData@listData$PatientNumber %in% repeat.inds]
+# 112 samples remaining (7 individuals, 16 samples each)
+repeat.dds$PatientNumber <- as.factor(repeat.dds$PatientNumber)
+design(repeat.dds) <- ~ PatientNumber + Repeat.Sample
+
+# analysis
+repeat.res.list <- list()
+repeat.plot.list <- list()
+
+for(i in 1:8){
+  cell.type <- levels(repeat.dds$SampleType)[i]
+  print(cell.type)
+  sub.rep.dds <- repeat.dds[, repeat.dds$SampleType == cell.type]
+  sub.rep.dds@colData <- droplevels(sub.rep.dds@colData)
+  sub.rep.dds <- DESeq(sub.rep.dds, parallel=TRUE)
+  repeat.res <- results(sub.rep.dds, parallel=TRUE, 
+                   independentFiltering=TRUE, alpha=0.05)
+  repeat.res$Gene <- mcols(repeat.dds)$Gene
+  repeat.res.LFC <- lfcShrink(sub.rep.dds, coef=length(resultsNames(sub.rep.dds)),
+                               parallel=TRUE)
+  repeat.res$log2FoldChange <- repeat.res.LFC$log2FoldChange
+  repeat.res$lfcSE <- repeat.res.LFC$lfcSE
+  repeatresOrdered <- repeat.res[order(repeat.res$padj), ]
+  repeatresOrdered <- repeatresOrdered[(complete.cases(repeatresOrdered)), ]
+  repeatresOrdered$sig <- ifelse((repeatresOrdered$padj < 0.05 & 
+                            abs(repeatresOrdered$log2FoldChange) >= log(1.5, 2)), 
+                          "Sig DE", "Not Sig")
+  repeat.res.list[[i]] <- repeatresOrdered
+  summary(repeatresOrdered)
+  
+  repeat.plot.list[[i]] <- ggplot(data.frame(repeatresOrdered),
+                                   aes(log2FoldChange, -log10(padj))) +
+    geom_point(aes(col=sig)) +
+    scale_color_manual(values=c("grey", "red")) +
+    theme_bw() +
+    ggtitle(cell.type) +
+    geom_text_repel(data=subset(data.frame(repeatresOrdered), sig == "Sig DE"),
+                    aes(label=Gene))
+}
+
+grid.arrange(grobs=repeat.plot.list, ncol=3)
+```
+
+The single gene that is significant in CD14 is shown. It encodes a 
+transcriptional repressor involved in the circadian clock. 
+
+```{r repeat-genes-cd14, warning=FALSE}
+g <- which(mcols(repeat.dds)$Gene == "PER1")
+d <- plotCounts(repeat.dds, gene=g, replaced=TRUE,
+                intgroup=c("SampleType", "Disease", "PatientNumber", 
+                           "Repeat.Sample"),
+                returnData=TRUE)
+ggplot(d, aes(x=Repeat.Sample, y=count, color=Disease, group=PatientNumber)) + 
+  geom_point(size=3) + 
+  scale_y_log10() +
+  theme_bw() +
+  geom_line() +
+  ylab("PER1") +
+  facet_wrap(~ SampleType, nrow=2)
+```
+
+The single gene that is significant in CD14_MET is shown. It encodes a 
+predicted transmembrane protein 
+
+```{r repeat-genes-cd14met, warning=FALSE}
+g <- which(mcols(repeat.dds)$Gene == "TMEM185A")
+d <- plotCounts(repeat.dds, gene=g, replaced=TRUE,
+                intgroup=c("SampleType", "Disease", "PatientNumber", 
+                           "Repeat.Sample"),
+                returnData=TRUE)
+ggplot(d, aes(x=Repeat.Sample, y=count, color=Disease, group=PatientNumber)) + 
+  geom_point(size=3) + 
+  scale_y_log10() +
+  theme_bw() +
+  geom_line() +
+  ylab("TMEM185A") +
+  facet_wrap(~ SampleType, nrow=2)
+```
+
+Finally, the gene that is significant in Paxgene is XIST, which is involved in 
+X chromosome inactivation
+
+```{r repeat-genes-paxgene, warning=FALSE}
+g <- which(mcols(repeat.dds)$Gene == "XIST")
+d <- plotCounts(repeat.dds, gene=g, replaced=TRUE,
+                intgroup=c("SampleType", "Disease", "PatientNumber", 
+                           "Repeat.Sample"),
+                returnData=TRUE)
+ggplot(d, aes(x=Repeat.Sample, y=count, color=Disease, group=PatientNumber)) + 
+  geom_point(size=3) + 
+  scale_y_log10() +
+  theme_bw() +
+  geom_line() +
+  ylab("XIST") +
+  facet_wrap(~ SampleType, nrow=2)
+```
+
+### CD14 vs CD8
+
+```{r cd14-cd8, message=FALSE}
+MT.res <- results(lps.dds, parallel=TRUE, independentFiltering=TRUE, alpha=0.05,
+                  contrast=c("SampleType", "CD14", "CD8"))
+MT.res$Gene <- mcols(lps.dds)$Gene
+MT.res.LFC <- lfcShrink(lps.dds, 
+                        contrast=c("SampleType", "CD14", "CD8"), parallel=TRUE)
+MT.res$log2FoldChange <- MT.res.LFC$log2FoldChange
+MT.res$lfcSE <- MT.res.LFC$lfcSE
+MTresOrdered <- MT.res[order(MT.res$padj), ]
+MTresOrdered <- MTresOrdered[(complete.cases(MTresOrdered)), ]
+summary(MTresOrdered)
+
+MTresOrdered$sig <- ifelse((MTresOrdered$padj < 0.05 & 
+                            abs(MTresOrdered$log2FoldChange) >= log(1.5, 2)), 
+                          "Sig DE", "Not Sig")
+ggplot(data.frame(MTresOrdered), aes(log2FoldChange, -log10(padj))) +
+  geom_point(aes(col=sig)) +
+  scale_color_manual(values=c("grey", "red")) +
+  theme_bw() +
+  ggtitle("CD8 vs CD14") +
+  geom_text_repel(data=subset(data.frame(MTresOrdered), padj <5e-330),
+                aes(label=Gene))
+
+r.lfc <- range(MT.res.LFC$log2FoldChange, na.rm=TRUE)
+plotMA(MT.res.LFC, ylim=r.lfc, main="MA Plot")
+abline(h=c(-log(1.5, 2), log(1.5, 2)), col="dodgerblue", lwd=2)
+
+data <- unique(as.character(MTresOrdered$Gene[MTresOrdered$sig == "Sig DE"]))
+background <- unique(as.character(MTresOrdered$Gene))
+eTerm_MT_GOBP_lea <- xEnricherGenes(data=data, background=background,
+                                        ontology="GOBP",
+                                        ontology.algorithm="lea",
+                                        RData.location=RData.location, 
+                                    verbose=FALSE)
+bp_MT_GOBP_lea <- xEnrichBarplot(eTerm_MT_GOBP_lea,
+                                   displayBy="fdr", top_num=10)
+bp_MT_GOBP_lea
+```
+
+### PBMC vs Paxgene
+
+```{r pbmc-paxgene, message=FALSE}
+pp.res <- results(lps.dds, parallel=TRUE, independentFiltering=TRUE, alpha=0.05,
+                  contrast=c("SampleType", "PBMC", "Paxgene"))
+pp.res$Gene <- mcols(lps.dds)$Gene
+pp.res.LFC <- lfcShrink(lps.dds, 
+                        contrast=c("SampleType", "PBMC", "Paxgene"),
+                        parallel=TRUE)
+pp.res$log2FoldChange <- pp.res.LFC$log2FoldChange
+pp.res$lfcSE <- pp.res.LFC$lfcSE
+ppresOrdered <- pp.res[order(pp.res$padj), ]
+ppresOrdered <- ppresOrdered[(complete.cases(ppresOrdered)), ]
+summary(ppresOrdered)
+
+ppresOrdered$sig <- ifelse((ppresOrdered$padj < 0.05 & 
+                            abs(ppresOrdered$log2FoldChange) >= log(1.5, 2)), 
+                          "Sig DE", "Not Sig")
+ggplot(data.frame(ppresOrdered), aes(log2FoldChange, -log10(padj))) +
+  
+  geom_point(aes(col=sig)) +
+  scale_color_manual(values=c("grey", "red")) +
+  theme_bw() +
+  ggtitle("PBMC vs Paxgene") +
+  geom_text_repel(data=subset(data.frame(ppresOrdered), padj <5e-250),
+                aes(label=Gene))
+
+data <- unique(as.character(ppresOrdered$Gene[ppresOrdered$sig == "Sig DE"]))
+background <- unique(as.character(ppresOrdered$Gene))
+eTerm_pp_GOBP_lea <- xEnricherGenes(data=data, background=background,
+                                        ontology="GOBP",
+                                        ontology.algorithm="lea",
+                                        RData.location=RData.location, 
+                                    verbose=FALSE)
+bp_pp_GOBP_lea <- xEnrichBarplot(eTerm_pp_GOBP_lea,
+                                   displayBy="fdr", top_num=10)
+bp_pp_GOBP_lea
+```
+
+### Modifying effect of age and BMI
+
+```{r bmi, message=FALSE}
+# design
+bmi.dds <- lps.dds
+# 152 samples remaining (19 individuals, 8 samples each)
+design(bmi.dds) <- ~ BMI
+
+# analysis
+bmi.res.list <- list()
+bmi.plot.list <- list()
+
+for(i in 1:8){
+  cell.type <- levels(bmi.dds$SampleType)[i]
+  print(cell.type)
+  sub.bmi.dds <- bmi.dds[, bmi.dds$SampleType == cell.type]
+  sub.bmi.dds@colData <- droplevels(sub.bmi.dds@colData)
+  sub.bmi.dds <- DESeq(sub.bmi.dds, parallel=TRUE)
+  bmi.res <- results(sub.bmi.dds, parallel=TRUE, 
+                   independentFiltering=TRUE, alpha=0.05)
+  bmi.res$Gene <- mcols(bmi.dds)$Gene
+  bmi.res.LFC <- lfcShrink(sub.bmi.dds, coef=length(resultsNames(sub.bmi.dds)),
+                               parallel=TRUE)
+  bmi.res$log2FoldChange <- bmi.res.LFC$log2FoldChange
+  bmi.res$lfcSE <- bmi.res.LFC$lfcSE
+  bmiresOrdered <- bmi.res[order(bmi.res$padj), ]
+  bmiresOrdered <- bmiresOrdered[(complete.cases(bmiresOrdered)), ]
+  bmi.res.list[[i]] <- bmiresOrdered
+  summary(bmiresOrdered)
+  
+  bmiresOrdered$sig <- ifelse((bmiresOrdered$padj < 0.05 & 
+                            abs(bmiresOrdered$log2FoldChange) >= log(1.5, 2)), 
+                          "Sig DE", "Not Sig")
+  bmi.plot.list[[i]] <- ggplot(data.frame(bmiresOrdered),
+                                   aes(log2FoldChange, -log10(padj))) +
+    geom_point(aes(col=sig)) +
+    scale_color_manual(values=c("grey", "red")) +
+    theme_bw() +
+    ggtitle(cell.type) +
+    geom_text_repel(data=subset(data.frame(bmiresOrdered), sig == "Sig DE"),
+                    aes(label=Gene))
+}
+
+grid.arrange(grobs=bmi.plot.list, ncol=3)
+```
