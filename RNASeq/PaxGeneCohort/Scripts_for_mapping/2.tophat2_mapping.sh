@@ -21,6 +21,7 @@ sh /apps/well/profile.d/python/2.7.sh
 
 # Installed tools and references
 
+# BOWTIE="/apps/well/bowtie2/2.2.5" # make sure this version of bowtie for compatibility with tophat
 SEQTK="/well/jknight/Wan/tools/cluster3/bin/seqtk"
 SAMTOOLS="/apps/well/samtools/1.2/bin/samtools"
 BEDTOOLS="/apps/well/bedtools/2.24.0-18-gb0bc5b7/bin/bedtools"
@@ -29,8 +30,8 @@ BAMTOOLS="/apps/well/bamtools/2.3.0/bin/bamtools"
 TOPHAT2=/apps/well/tophat/2.0.14/bin/tophat2
 
 # GRCh37
-GTF=/well/jknight/reference/mapping/GRCh37/gencode.v19.chr_patch_hapl_scaff.annotation.gtf
-BOWTIE2_GENOME_INDEX=/well/jknight/Wan/ref/rescomp/bowtie2_g/Gencode19.GRCh37.genome.PGF.decoy.ERCC
+GTF=/well/jknight/AbuDhabiRNA/Katie/mapping/2.mapping/symlink/gencode.v19.chr_patch_hapl_scaff.annotation
+BOWTIE2_GENOME_INDEX=/well/jknight/AbuDhabiRNA/Katie/mapping/2.mapping/symlink/Gencode19.GRCh37.genome.PGF.decoy.ERCC
 
 ###################################################
 #
@@ -41,8 +42,8 @@ BOWTIE2_GENOME_INDEX=/well/jknight/Wan/ref/rescomp/bowtie2_g/Gencode19.GRCh37.ge
 nthreads=4			# default: 1 
 mate_inner_dist=190		# default: 50
 mate_std_dev=50		# default: 20
-read_mismatches=2		# default: 2
-read_edit_dist=2		# default: 2
+read_mismatches=4		# default: 2
+read_edit_dist=4		# default: 2
 b2_N=1				# default: 0 multiseed alignment number of mismatches
 library_type="fr-unstranded"	# default is unstranded (fr-unstranded)
 
@@ -58,17 +59,13 @@ segment_mismatches=2		# default: 2
 PROJECT_DIR="/well/jknight/AbuDhabiRNA/Katie/"	# you can define your project directory
 SAMPLE_NAME=$1
 
-OUTPUT_DIR=$PROJECT_DIR"/mapping/2.mapping/"
+OUTPUT_DIR=$PROJECT_DIR"mapping/2.mapping/"
 
 if [[ ! -e $OUTPUT_DIR ]]; then
                 mkdir -p $OUTPUT_DIR
 fi
 
 SAMPLE_NAME=$1
-
-#ln -s $BOWTIE2_GENOME_INDEX* $OUTPUT_DIR
-#ln -s $GTF $OUTPUT_DIR
-#ln -s $TOPHAT2 $OUTPUT_DIR
 
 ###################################################
 #
@@ -109,31 +106,21 @@ TOPHAT2_MAPPING(){
 			--library-type $library_type \
 			--read-gap-length $read_gap_length \
 			--segment-mismatches $segment_mismatches \
-			-G $GTF \
+			-G $GTF.gtf \
+			--transcriptome-index $GTF \
 			-o $SAMPLE_NAME $BOWTIE2_GENOME_INDEX $2 $3 \
 			2> stderr.$SAMPLE_NAME.tophat2.txt"
 	echo $tmp
 
 
-	#echo "Manipulations on sam file:  indexing: \`date\`"
+	echo "Manipulations on sam file:  indexing: \`date\`"
 
 	tmp="$SAMTOOLS index $OUTPUT_DIR$SAMPLE_NAME/accepted_hits.bam \
 		2> stderr.$SAMPLE_NAME.samtools_index.txt"
 	echo $tmp
 
-	#tmp="$SAMTOOLS view -hb $OUTPUT_DIR$SAMPLE_NAME.pgf/accepted_hits.bam \
-        #                chr6:28500000-33390000 > $OUTPUT_DIR$SAMPLE_NAME.pgf/pgf.accepted_hits.bam"
-	#echo $tmp
-
-	#tmp="$SAMTOOLS index $OUTPUT_DIR$SAMPLE_NAME.pgf/pgf.accepted_hits.bam \
-        #        2> stderr.$SAMPLE_NAME.samtools_index_pgf.txt"
-        #        echo $tmp
-
-
 	echo "echo MAPPING DONE."	
 }
-
-
 
 ###################################################
 #
@@ -146,7 +133,7 @@ ENVIRONMENT_SETUP(){
         echo "module load R/3.1.3"
         echo "export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/apps/well/bamtools/2.3.0/lib/bamtools/"
         echo "sh /apps/well/profile.d/python/2.7.sh"
-	echo "source ~/.bashrc"
+	      echo "source ~/.bashrc"
         echo "echo "
 }
 
@@ -164,11 +151,11 @@ WRITE_A_SCRIPT(){
         echo "#\!/bin/bash"
         echo "#$ -cwd -pe shmem 4 -V -N log."$1
         echo "#$ -P jknight.prjc -q long.qc"
-        echo "-o $OUTPUT_DIR$SAMPLE_NAME/log$1_stdout.log"
-        echo "-e $OUTPUT_DIR$SAMPLE_NAME/log$1_stderr.log"
+        echo "#$ -o $1/$1.stdout"
+        echo "#$ -e $1/$1.sterr"
 
         ENVIRONMENT_SETUP
-	TOPHAT2_MAPPING $1 $2 $3
+	      TOPHAT2_MAPPING $1 $2 $3
 	
         echo "echo Finished analysis at: \`date\`"
 

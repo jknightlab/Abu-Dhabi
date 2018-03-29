@@ -1,8 +1,5 @@
 #!/bin/bash
 
-
-
-
 ##### define your paths
 
 # 1) a directory of fastq files
@@ -17,8 +14,6 @@
 #echo $cmd
 
 
-
-
 if [[ ! -e "mappingscripts" ]]; then
 
 mkdir ./mappingscripts
@@ -28,15 +23,12 @@ fi
 rst="./run.submit_jobs_for_mapping.sh"
 echo "" > $rst
 
-
-
 ###################################################
 #
 # Add your sample data file here with a full path
  FILE="/well/jknight/AbuDhabiRNA/Katie/mapping/2.mapping/mapping.info.txt"
 #
 ##################################################
-
 
 while read -r line
 do
@@ -67,7 +59,6 @@ done < $FILE
 ### move all scripts to your working directory 
 #mv ./mappingscripts/run.mapping* ./mapping/2.mapping/mappingscripts
 #mv ./mappingscripts/run.submit_jobs_for_mapping.sh ./mapping/2.mapping
-
 
 
 
