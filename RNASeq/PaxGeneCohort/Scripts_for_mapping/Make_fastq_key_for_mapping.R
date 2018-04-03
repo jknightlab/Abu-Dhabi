@@ -14,6 +14,7 @@ table(core.summary$Sample.Name %in% sample.key$Sample.Name, core.summary$Sequenc
 # fastq files for the 623 successful samples, and 5 that failed
 
 # Make a list of the 623 samples and the corresponding fastq files
+# NB FG84M is duplicated so was deleted manually
 mapping.key <- matrix(nrow=623, ncol=2)
 mapping.key[, 1] <- core.summary$Sample.Name[core.summary$Sequenced.library. == "Yes"]
 for(i in 1:nrow(mapping.key)){

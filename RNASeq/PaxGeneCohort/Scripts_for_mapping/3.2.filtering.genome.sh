@@ -50,7 +50,7 @@ FILTERING_GENOME_MAPPING(){
         fi
 
 
-	tmp="$SAMTOOLS sort $INPUT_DIR/$SAMPLE_NAME.pgf/accepted_hits.bam $DIR_FILTER/$SAMPLE_NAME.sorted"
+	tmp="$SAMTOOLS sort $INPUT_DIR/$SAMPLE_NAME/accepted_hits.bam $DIR_FILTER/$SAMPLE_NAME.sorted"
 	echo $tmp
 	tmp="$SAMTOOLS index $DIR_FILTER/$SAMPLE_NAME.sorted.bam"
 	echo $tmp
@@ -104,7 +104,7 @@ ENVIRONMENT_SETUP(){
 WRITE_A_SCRIPT(){
 
         echo "#\!/bin/bash"
-        echo "#$ -cwd -pe shmem 2 -V -N log."$1
+        echo "#$ -cwd -pe shmem 2 -V -N filter."$1
         echo "#$ -P jknight.prjc -q short.qc"
         echo "-o $OUTPUT_DIR$SAMPLE_NAME.pgf/log$1_stdout.log"
         echo "-e $OUTPUT_DIR$SAMPLE_NAME.pgf/log$1_stderr.log"

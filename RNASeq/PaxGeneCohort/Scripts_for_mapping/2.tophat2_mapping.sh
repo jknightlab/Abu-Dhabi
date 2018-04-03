@@ -21,7 +21,7 @@ sh /apps/well/profile.d/python/2.7.sh
 
 # Installed tools and references
 
-# BOWTIE="/apps/well/bowtie2/2.2.5" # make sure this version of bowtie for compatibility with tophat
+BOWTIE="/apps/well/bowtie2/2.2.5" # make sure this version of bowtie for compatibility with tophat
 SEQTK="/well/jknight/Wan/tools/cluster3/bin/seqtk"
 SAMTOOLS="/apps/well/samtools/1.2/bin/samtools"
 BEDTOOLS="/apps/well/bedtools/2.24.0-18-gb0bc5b7/bin/bedtools"
