@@ -44,7 +44,7 @@ SAMPLE_NAME=$1
 
 FILTERING_GENOME_MAPPING(){
 
-	DIR_FILTER="$OUTPUT_DIR/$SAMPLE_NAME.pgf"
+	DIR_FILTER="$OUTPUT_DIR/$SAMPLE_NAME"
         if [[ ! -e $DIR_FILTER ]]; then
                 echo "mkdir -p $DIR_FILTER"
         fi
@@ -106,11 +106,11 @@ WRITE_A_SCRIPT(){
         echo "#\!/bin/bash"
         echo "#$ -cwd -pe shmem 2 -V -N filter."$1
         echo "#$ -P jknight.prjc -q short.qc"
-        echo "-o $OUTPUT_DIR$SAMPLE_NAME.pgf/log$1_stdout.log"
-        echo "-e $OUTPUT_DIR$SAMPLE_NAME.pgf/log$1_stderr.log"
+        echo "#$ -o $OUTPUT_DIR$SAMPLE_NAME.pgf/log$1_stdout.log"
+        echo "#$ -e $OUTPUT_DIR$SAMPLE_NAME.pgf/log$1_stderr.log"
 
         ENVIRONMENT_SETUP
-	FILTERING_GENOME_MAPPING $1
+	      FILTERING_GENOME_MAPPING $1
 
         echo "echo Finished analysis at: \`date\`"
 
