@@ -26,3 +26,17 @@ mapping.key <- data.frame(mapping.key)
 
 write.table(mapping.key, "/well/jknight/AbuDhabiRNA/Katie/mapping/2.mapping/mapping.info.txt",
             sep="\t", quote=FALSE, row.names=FALSE, col.names=FALSE)
+
+
+
+################################################################################
+
+# Make index of bam files for mapping QC
+
+s.info <- read.delim("/well/jknight/AbuDhabiRNA/Katie/mapping/2.mapping/mapping.info.txt")
+
+bam.files <- data.frame("Sample ID"=s.info[, 1], 
+                        "Bam File"=paste("/well/jknight/AbuDhabiRNA/Katie/mapping/2.mapping/", 
+                                         s.info[, 1], "/accepted_hits.bam", sep=""), 
+                        "Notes"=NA)
+write.table(bam.files, "QC/bam.files.txt", sep="\t", quote=FALSE)
