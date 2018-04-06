@@ -8,7 +8,7 @@ editor_options:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = FALSE, cache=TRUE, message=FALSE)
+knitr::opts_chunk$set(echo = FALSE, message=FALSE)
 
 library(kburnhamfunctions)
 # install.packages("Vennerable", repos = "http://R-Forge.R-project.org")
@@ -235,16 +235,16 @@ NB - under default settings, the final term in the model is the variable of
 interest and control level is first.
 
 ```{r convert-to-DESeq2DataSet, warning=FALSE}
-counts <- counts[, -to.rm]
-full.s.info <- full.s.info[-to.rm, ]
+counts.rm <- counts[, -to.rm]
+full.s.info.rm <- full.s.info[-to.rm, ]
 
-dds <- DESeqDataSetFromMatrix(countData=counts,
-                              colData=full.s.info,
+dds <- DESeqDataSetFromMatrix(countData=counts.rm,
+                              colData=full.s.info.rm,
                               design= ~ SampleType + Disease)
 dds$Disease <- relevel(dds$Disease, ref = "Control")
 dds
 
-sample.type <- as.factor(full.s.info$SampleType)
+sample.type <- as.factor(full.s.info.rm$SampleType)
 plot(density(log(counts[, 1]+1)), main="Distribution of raw intensities",
      col=sample.type[1], ylim=c(0, 5.5), xlim=c(-0.8, 3),
      cex.main=0.8)
@@ -253,30 +253,6 @@ for (i in 2:ncol(counts)){
 }
 legend("topright", legend=unique(sample.type), 
        col=c(1:8), lty=1, cex=0.5)
-```
-
-The gene symbols are looked up using biomaRt from their ensembl IDs.
-
-```{r genes}
-ensembl <- useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl",
-                      GRCh="37")
-genes <- getBM(attributes=c('ensembl_gene_id', 
-                            'ensembl_transcript_id',
-                            'hgnc_symbol', 
-                            'chromosome_name', 
-                            'start_position',
-                            'end_position',
-                            'gene_biotype'), 
-                   filters = 'ensembl_gene_id', 
-                   values =rownames(counts),
-                   mart = ensembl)
-
-featureData <- data.frame(Ensembl=rownames(counts), 
-                          Gene=genes$hgnc_symbol[match(rownames(counts),
-                                                       genes$ensembl_gene_id)],
-                          GeneType=genes$gene_biotype[match(rownames(counts),
-                                                       genes$ensembl_gene_id)])
-mcols(dds) <- DataFrame(mcols(dds), featureData)
 ```
 
 ### Pre-filtering
@@ -354,8 +330,8 @@ p2 <- p2$gg + theme_bw()
 grid.arrange(p1, p2, nrow=1)
 
 melt.exprs <- melt(assay(vsd))
-melt.exprs$Type <- full.s.info$SampleType[match(melt.exprs$X2, 
-                                                full.s.info$SampleId)]
+melt.exprs$Type <- full.s.info.rm$SampleType[match(melt.exprs$X2, 
+                                                full.s.info.rm$SampleId)]
 ggplot(melt.exprs, aes(X2, value, colour=Type)) +
   geom_boxplot() +
   theme_bw() +
@@ -461,6 +437,66 @@ pheatmap(sampleDistMatrix,
          clustering_distance_cols = sampleDists,
          annotation_row=annotation_row,
          col = colors)
+```
+
+The mixed up samples are removed as we cannot definitively resolve the issue.
+
+```{r remove}
+to.rm <- as.character(metrics$Sample[metrics$Mapping.Rate < 0.4])
+mixup <- as.character(full.s.info$SampleId[full.s.info$SampleNameFull %in% 
+  c("94_CD14_LPS", "94_CD14_PBS", "148_CD14_LPS", "148_CD14_MET_LPS", 
+    "100_CD14_PBS", "100_CD14_LPS", "100_CD14_MET_LPS", "100_CD14_MET",
+    "102_CD14_PBS", "102_CD14_LPS", "102_CD14_MET_LPS", "102_CD14_MET")])
+to.rm <- c(to.rm, mixup)  
+to.rm <- which(full.s.info$SampleId %in% to.rm)
+counts.rm <- counts[, -to.rm]
+full.s.info <- full.s.info[-to.rm, ]
+
+dds <- DESeqDataSetFromMatrix(countData=counts.rm,
+                              colData=full.s.info,
+                              design= ~ SampleType + Disease)
+dds$Disease <- relevel(dds$Disease, ref = "Control")
+
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+dds
+
+# New PCA
+vsd <- vst(dds, blind=TRUE)
+pcaData <- plotPCA(vsd, intgroup = c("Disease", "SampleType"), returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(x = PC1, y = PC2, color = SampleType, shape = Disease)) +
+  geom_point(size =3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  theme_bw()
+
+```
+
+The gene symbols are looked up using biomaRt from their ensembl IDs.
+
+```{r genes}
+ensembl <- useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl",
+                      GRCh="37")
+genes <- getBM(attributes=c('ensembl_gene_id', 
+                            'ensembl_transcript_id',
+                            'hgnc_symbol', 
+                            'chromosome_name', 
+                            'start_position',
+                            'end_position',
+                            'gene_biotype'), 
+                   filters = 'ensembl_gene_id', 
+                   values =rownames(counts(dds)),
+                   mart = ensembl)
+
+featureData <- data.frame(Ensembl=rownames(counts(dds)), 
+                          Gene=genes$hgnc_symbol[match(rownames(counts(dds)),
+                                                       genes$ensembl_gene_id)],
+                          GeneType=genes$gene_biotype[match(rownames(counts(dds)),
+                                                       genes$ensembl_gene_id)])
+mcols(dds) <- DataFrame(mcols(dds), featureData)
+table(mcols(dds)$GeneType)
 ```
 
 ## Differential expression analysis
@@ -574,7 +610,7 @@ table(lps.dds$SampleType)
 lps.dds <- DESeq(lps.dds, parallel=TRUE)
 
 # normalised counts
-lps.dds.norm <- counts(lps.dds, normalized=TRUE)
+# lps.dds.norm <- counts(lps.dds, normalized=TRUE)
 
 # density plot
 # plot(density(log(lps.dds.norm[, 1]+1)), 
@@ -609,9 +645,9 @@ lpsresOrdered <- lpsresOrdered[(complete.cases(lpsresOrdered)), ]
 summary(lpsresOrdered)
 res05 <- results(lps.dds, alpha=0.05)
 
-write.table(lpsresOrdered,
-            file="U:/Abu-Dhabi/RNASeq/PilotData/LPSResponse_All_Patients.txt",
-            sep="\t")
+# write.table(lpsresOrdered,
+            # file="U:/Abu-Dhabi/RNASeq/PilotData/LPSResponse_All_Patients.txt",
+            # sep="\t")
 ```
 
 `r sum(lpsresOrdered$padj < 0.05, na.rm=TRUE)` transcripts are differentially
@@ -667,15 +703,14 @@ for(j in 1:10){
                 returnData=TRUE)
   d <- subset(d, SampleType %in% c("CD14_LPS", "CD14_PBS"))
   gene.name <- as.character(mcols(lps.dds)$Gene[i])
+  if(gene.name == "") gene.name <- as.character(mcols(lps.dds)$Ensembl[i])
   de.plot.list[[j]] <- ggplot(d, aes(x=SampleType, y=count, color=Disease,
                                      group=PatientNumber)) + 
     geom_point() + 
     scale_y_log10() +
     theme_bw() +
     geom_line() +
-    ylab(gene.name) +
-    geom_text(data=d[d$PatientNumber %in% c(94, 100, 102, 148), ],
-            aes(label=PatientNumber))
+    ylab(gene.name)
 }
 
 grid.arrange(grobs=de.plot.list, ncol=2)
@@ -696,7 +731,7 @@ ggplot(data.frame(lpsresOrdered), aes(log2FoldChange, -log10(padj))) +
   xlab("log2(fold change") +
   ggtitle("LPS vs PBS CD14") +
   theme_bw() +
-  geom_text_repel(data=subset(data.frame(lpsresOrdered), padj<5e-20),
+  geom_text_repel(data=subset(data.frame(lpsresOrdered), padj<5e-100),
                   aes(label=Gene))
 ```
 
@@ -887,12 +922,17 @@ lps.dis.res <- lps.dis.res[(complete.cases(lps.dis.res)), ]
 summary(lps.dis.res)
 lps.dis.res[lps.dis.res$padj < 0.05, ]
 
-d <- plotCounts(lps.dds.dis, gene="ENSG00000182217", 
+plot.list <- list()
+
+for(i in 1:nrow(lps.dis.res[lps.dis.res$padj < 0.05, ])){
+  gene <- rownames(lps.dis.res[lps.dis.res$padj < 0.05, ])[i]
+  d <- plotCounts(lps.dds.dis, gene=gene, 
                 intgroup=c("SampleType", "Disease", "PatientNumber"),
                 returnData=TRUE)
-d <- subset(d, SampleType %in% c("CD14_LPS", "CD14_PBS"))
-gene.name <- as.character(mcols(lps.dds)$Gene[which(rownames(lps.dds) == "ENSG00000182217")])
-ggplot(d, aes(x=SampleType, y=count, color=Disease,
+  d <- subset(d, SampleType %in% c("CD14_LPS", "CD14_PBS"))
+  gene.name <- as.character(mcols(lps.dds)$Gene[which(rownames(lps.dds) == gene)])
+  if(gene.name == "") gene.name <- as.character(mcols(lps.dds)$Ensembl[which(rownames(lps.dds) == gene)])
+  plot.list[[i]] <- ggplot(d, aes(x=SampleType, y=count, color=Disease,
                                      group=PatientNumber)) + 
     geom_point(position=position_dodge(0.1)) + 
     scale_y_log10() +
@@ -900,6 +940,9 @@ ggplot(d, aes(x=SampleType, y=count, color=Disease,
     geom_line(position=position_dodge(0.1)) +
     ylab(gene.name) +
   facet_wrap(~ Disease)
+}
+
+grid.arrange(grobs=plot.list, ncol=2)
 ```
 
 I have also analysed the patients and controls separately:
@@ -953,7 +996,7 @@ plotDispEsts(lps.con.dds, main="Dispersion plot")
 
 boxplot(log10(assays(lps.con.dds)[["cooks"]]), range=0, las=2, 
         main="Cook's distance")
-# No outliers 
+print("One dodgy-looking sample")
 
 hist(lpsconresOrdered$pvalue, breaks=100, main="P value")
 
@@ -1213,6 +1256,19 @@ ggplot(d, aes(x=Disease, y=count, color=Disease)) +
   theme_bw() +
   ylab("C3AR1") +
   facet_wrap(~ SampleType, nrow=2)
+
+
+g <- which(mcols(disease.dds)$Gene == "TMEM14C")
+d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
+                intgroup=c("SampleType", "Disease"),
+                returnData=TRUE)
+ggplot(d, aes(x=Disease, y=count, color=Disease)) + 
+  geom_boxplot() +
+  geom_point(size=3) + 
+  scale_y_log10() +
+  theme_bw() +
+  ylab("TMEM14C") +
+  facet_wrap(~ SampleType, nrow=2)
 ```
 
 ### Repeat visit
@@ -1224,10 +1280,14 @@ NB the repeat samples were poorer quality, which could have a batch effect that
 can't be removed.
 
 ```{r repeat, message=FALSE}
-repeat.inds <- names(which(table(dds$PatientNumber) == 16))
+repeat.inds <- names(which(table(dds$PatientNumber) >= 12))
 repeat.dds <- dds[, dds@colData@listData$PatientNumber %in% repeat.inds]
+to.rm <- c("86_CD14_LPS", "115_CD14_MET_LPS", "115_CD14_PBS", "115_CD14_MET",
+           "115_CD14_LPS")
+repeat.dds <- repeat.dds[, !(repeat.dds$SampleNameFull %in% to.rm)]
 # 112 samples remaining (7 individuals, 16 samples each)
 repeat.dds$PatientNumber <- as.factor(repeat.dds$PatientNumber)
+repeat.dds@colData <- droplevels(repeat.dds@colData)
 design(repeat.dds) <- ~ PatientNumber + Repeat.Sample
 
 # analysis
@@ -1266,27 +1326,11 @@ for(i in 1:8){
 }
 
 grid.arrange(grobs=repeat.plot.list, ncol=3)
+print(repeat.plot.list[[3]])
+print(repeat.plot.list[[4]])
 ```
 
-The single gene that is significant in CD14 is shown. It encodes a 
-transcriptional repressor involved in the circadian clock. 
-
-```{r repeat-genes-cd14, warning=FALSE}
-g <- which(mcols(repeat.dds)$Gene == "PER1")
-d <- plotCounts(repeat.dds, gene=g, replaced=TRUE,
-                intgroup=c("SampleType", "Disease", "PatientNumber", 
-                           "Repeat.Sample"),
-                returnData=TRUE)
-ggplot(d, aes(x=Repeat.Sample, y=count, color=Disease, group=PatientNumber)) + 
-  geom_point(size=3) + 
-  scale_y_log10() +
-  theme_bw() +
-  geom_line() +
-  ylab("PER1") +
-  facet_wrap(~ SampleType, nrow=2)
-```
-
-The single gene that is significant in CD14_MET is shown. It encodes a 
+The single gene that is strongly significant in CD14_MET is shown. It encodes a 
 predicted transmembrane protein 
 
 ```{r repeat-genes-cd14met, warning=FALSE}
@@ -1304,22 +1348,17 @@ ggplot(d, aes(x=Repeat.Sample, y=count, color=Disease, group=PatientNumber)) +
   facet_wrap(~ SampleType, nrow=2)
 ```
 
-Finally, the gene that is significant in Paxgene is XIST, which is involved in 
-X chromosome inactivation
-
-```{r repeat-genes-paxgene, warning=FALSE}
-g <- which(mcols(repeat.dds)$Gene == "XIST")
-d <- plotCounts(repeat.dds, gene=g, replaced=TRUE,
-                intgroup=c("SampleType", "Disease", "PatientNumber", 
-                           "Repeat.Sample"),
-                returnData=TRUE)
-ggplot(d, aes(x=Repeat.Sample, y=count, color=Disease, group=PatientNumber)) + 
-  geom_point(size=3) + 
-  scale_y_log10() +
-  theme_bw() +
-  geom_line() +
-  ylab("XIST") +
-  facet_wrap(~ SampleType, nrow=2)
+```{r repeat-xgr, fig.height=12, message=FALSE}
+data <- as.character(repeat.res.list[[4]]$Gene[repeat.res.list[[4]]$sig == "Sig DE"])
+background <- as.character(repeat.res.list[[4]]$Gene)
+eTerm_repeat_GOBP_lea <- xEnricherGenes(data=data, background=background,
+                                      ontology="GOBP",
+                                      ontology.algorithm="lea",
+                                     RData.location=RData.location,
+                                     verbose=FALSE)
+bp_repeat_GOBP_lea <- xEnrichBarplot(eTerm_repeat_GOBP_lea,
+                                   displayBy="fdr", top_num=10)
+bp_repeat_GOBP_lea
 ```
 
 ### CD14 vs CD8
