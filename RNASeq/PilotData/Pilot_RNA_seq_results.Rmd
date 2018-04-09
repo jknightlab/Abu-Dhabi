@@ -976,7 +976,8 @@ plot(metadata(lps.con.res)$filterNumRej,
 lines(metadata(lps.con.res)$lo.fit, col="red")
 abline(v=metadata(lps.con.res)$filterTheta)
 
-lps.con.res.LFC <- lfcShrink(lps.con.dds, coef=11, parallel=TRUE)
+lps.con.res.LFC <- lfcShrink(lps.con.dds, coef=length(resultsNames(lps.con.dds)),
+                             parallel=TRUE)
 lps.con.res$log2FoldChange <- lps.con.res.LFC$log2FoldChange
 lps.con.res$lfcSE <- lps.con.res.LFC$lfcSE
 lpsconresOrdered <- lps.con.res[order(lps.con.res$padj), ]
@@ -1040,7 +1041,8 @@ plot(metadata(lps.t2d.res)$filterNumRej,
 lines(metadata(lps.t2d.res)$lo.fit, col="red")
 abline(v=metadata(lps.t2d.res)$filterTheta)
 
-lps.t2d.res.LFC <- lfcShrink(lps.t2d.dds, coef=10, parallel=TRUE)
+lps.t2d.res.LFC <- lfcShrink(lps.t2d.dds, coef=length(resultsNames(lps.t2d.dds)),
+                             parallel=TRUE)
 lps.t2d.res$log2FoldChange <- lps.t2d.res.LFC$log2FoldChange
 lps.t2d.res$lfcSE <- lps.t2d.res.LFC$lfcSE
 lpst2dresOrdered <- lps.t2d.res[order(lps.t2d.res$padj), ]
