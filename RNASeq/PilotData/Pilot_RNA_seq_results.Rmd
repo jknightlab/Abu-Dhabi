@@ -47,7 +47,6 @@ library(BiocParallel)
 register(SnowParam(4))
 
 # look up gene ids
-library(biomaRt)
 library(ensembldb)
 library(EnsDb.Hsapiens.v75)
 
@@ -499,7 +498,7 @@ TxByGns <- genes(edb, return.type="data.frame")
 featureData <- TxByGns[match(rownames(counts(dds)), TxByGns$gene_id), ]
 
 mcols(dds) <- DataFrame(mcols(dds), featureData)
-table(mcols(dds)$GeneType)
+table(mcols(dds)$gene_biotype)
 ```
 
 ## Differential expression analysis
@@ -704,7 +703,7 @@ for(j in 1:10){
                 intgroup=c("SampleType", "Disease", "PatientNumber"),
                 returnData=TRUE)
   d <- subset(d, SampleType %in% c("CD14_LPS", "CD14_PBS"))
-  gene.name <- as.character(mcols(lps.dds)$Gene[i])
+  gene.name <- as.character(mcols(lps.dds)$gene_name[i])
   if(gene.name == "") gene.name <- as.character(mcols(lps.dds)$gene_id[i])
   de.plot.list[[j]] <- ggplot(d, aes(x=SampleType, y=count, color=Disease,
                                      group=PatientNumber)) + 
@@ -919,7 +918,7 @@ lps.dis.res <- results(lps.dds.dis, parallel=TRUE,
                    independentFiltering=TRUE, alpha=0.05,
                    contrast=list("DiseaseT2D.SampleTypeCD14_LPS",
                                  "DiseaseControl.SampleTypeCD14_LPS"))
-lps.dis.res$Gene <- mcols(lps.dds.dis)$Gene
+lps.dis.res$Gene <- mcols(lps.dds.dis)$gene_name
 lps.dis.res <- lps.dis.res[(complete.cases(lps.dis.res)), ]
 summary(lps.dis.res)
 lps.dis.res[lps.dis.res$padj < 0.05, ]
@@ -932,7 +931,7 @@ for(i in 1:nrow(lps.dis.res[lps.dis.res$padj < 0.05, ])){
                 intgroup=c("SampleType", "Disease", "PatientNumber"),
                 returnData=TRUE)
   d <- subset(d, SampleType %in% c("CD14_LPS", "CD14_PBS"))
-  gene.name <- as.character(mcols(lps.dds)$Gene[which(rownames(lps.dds) == gene)])
+  gene.name <- as.character(mcols(lps.dds)$gene_name[which(rownames(lps.dds) == gene)])
   if(gene.name == "") gene.name <- as.character(mcols(lps.dds)$gene_id[which(rownames(lps.dds) == gene)])
   plot.list[[i]] <- ggplot(d, aes(x=SampleType, y=count, color=Disease,
                                      group=PatientNumber)) + 
@@ -962,15 +961,15 @@ design(lps.con.dds) <- ~ PatientNumber + SampleType
 table(lps.con.dds$SampleType)
 
 # analysis
-lps.con.dds <- DESeq(lps.con.dds, parallel=TRUE)
+lps.con.dds <- DESeq(lps.con.dds)
 
 # normalised counts
 lps.con.dds.norm <- counts(lps.con.dds, normalized=TRUE)
 
 # results
-lps.con.res <- results(lps.con.dds, parallel=TRUE, 
+lps.con.res <- results(lps.con.dds, 
                        independentFiltering=TRUE, alpha=0.05)
-lps.con.res$Gene <- mcols(lps.con.dds)$Gene
+lps.con.res$Gene <- mcols(lps.con.dds)$gene_name
 
 plot(metadata(lps.con.res)$filterNumRej,
      type="b", ylab="Number of rejections",
@@ -978,8 +977,7 @@ plot(metadata(lps.con.res)$filterNumRej,
 lines(metadata(lps.con.res)$lo.fit, col="red")
 abline(v=metadata(lps.con.res)$filterTheta)
 
-lps.con.res.LFC <- lfcShrink(lps.con.dds, coef=length(resultsNames(lps.con.dds)),
-                             parallel=TRUE)
+lps.con.res.LFC <- lfcShrink(lps.con.dds, coef=length(resultsNames(lps.con.dds)))
 lps.con.res$log2FoldChange <- lps.con.res.LFC$log2FoldChange
 lps.con.res$lfcSE <- lps.con.res.LFC$lfcSE
 lpsconresOrdered <- lps.con.res[order(lps.con.res$padj), ]
@@ -1027,15 +1025,15 @@ design(lps.t2d.dds) <- ~ PatientNumber + SampleType
 table(lps.t2d.dds$SampleType)
 
 # analysis
-lps.t2d.dds <- DESeq(lps.t2d.dds, parallel=TRUE)
+lps.t2d.dds <- DESeq(lps.t2d.dds)
 
 # normalised counts
 lps.t2d.dds.norm <- counts(lps.t2d.dds, normalized=TRUE)
 
 # results
-lps.t2d.res <- results(lps.t2d.dds, parallel=TRUE, 
+lps.t2d.res <- results(lps.t2d.dds, 
                        independentFiltering=TRUE, alpha=0.05)
-lps.t2d.res$Gene <- mcols(lps.t2d.dds)$Gene
+lps.t2d.res$Gene <- mcols(lps.t2d.dds)$gene_name
 
 plot(metadata(lps.t2d.res)$filterNumRej,
      type="b", ylab="Number of rejections",
@@ -1043,8 +1041,7 @@ plot(metadata(lps.t2d.res)$filterNumRej,
 lines(metadata(lps.t2d.res)$lo.fit, col="red")
 abline(v=metadata(lps.t2d.res)$filterTheta)
 
-lps.t2d.res.LFC <- lfcShrink(lps.t2d.dds, coef=length(resultsNames(lps.t2d.dds)),
-                             parallel=TRUE)
+lps.t2d.res.LFC <- lfcShrink(lps.t2d.dds, coef=length(resultsNames(lps.t2d.dds)))
 lps.t2d.res$log2FoldChange <- lps.t2d.res.LFC$log2FoldChange
 lps.t2d.res$lfcSE <- lps.t2d.res.LFC$lfcSE
 lpst2dresOrdered <- lps.t2d.res[order(lps.t2d.res$padj), ]
@@ -1134,13 +1131,12 @@ response to the CD14_MET_LPS vs PBS response.
 
 ```{r lps-met, message=FALSE, warning=FALSE}
 # results
-pbs.met.res <- results(lps.dds, parallel=TRUE,
+pbs.met.res <- results(lps.dds, 
                        contrast=c("SampleType", "CD14_PBS", "CD14_MET"),
                    independentFiltering=TRUE, alpha=0.05)
-pbs.met.res$Gene <- mcols(lps.dds)$Gene
+pbs.met.res$Gene <- mcols(lps.dds)$gene_name
 pbs.met.res.LFC <- lfcShrink(lps.dds, 
-                             contrast=c("SampleType", "CD14_PBS", "CD14_MET"),
-                             parallel=TRUE)
+                             contrast=c("SampleType", "CD14_PBS", "CD14_MET"))
 pbs.met.res$log2FoldChange <- pbs.met.res.LFC$log2FoldChange
 pbs.met.res$lfcSE <- pbs.met.res.LFC$lfcSE
 pbsmetresOrdered <- pbs.met.res[order(pbs.met.res$padj), ]
@@ -1161,13 +1157,13 @@ ggplot(d, aes(x=SampleType, y=count, color=Disease,
     geom_line() +
     ylab(gene.name)
 
-lps.met.res <- results(lps.dds, parallel=TRUE, 
+lps.met.res <- results(lps.dds, 
                    contrast=c("SampleType", "CD14_LPS", "CD14_MET_LPS"),
                    independentFiltering=TRUE, alpha=0.05)
-lps.met.res$Gene <- mcols(lps.dds)$Gene
+lps.met.res$Gene <- mcols(lps.dds)$gene_name
 lps.met.res.LFC <- lfcShrink(lps.dds, 
-                             contrast=c("SampleType", "CD14_LPS", "CD14_MET_LPS"),
-                             parallel=TRUE)
+                             contrast=c("SampleType", "CD14_LPS",
+                                        "CD14_MET_LPS"))
 lps.met.res$log2FoldChange <- lps.met.res.LFC$log2FoldChange
 lps.met.res$lfcSE <- lps.met.res.LFC$lfcSE
 lpsmetresOrdered <- lps.met.res[order(lps.met.res$padj), ]
@@ -1175,13 +1171,13 @@ lpsmetresOrdered <- lpsmetresOrdered[(complete.cases(lpsmetresOrdered)), ]
 print("CD14_LPS vs CD14_MET_LPS")
 summary(lpsmetresOrdered)
 
-pbs.met.res <- results(lps.dds, parallel=TRUE, 
+pbs.met.res <- results(lps.dds, 
                    contrast=c("SampleType", "CD14_PBS", "CD14_MET_LPS"),
                    independentFiltering=TRUE, alpha=0.05)
-pbs.met.res$Gene <- mcols(lps.dds)$Gene
+pbs.met.res$Gene <- mcols(lps.dds)$gene_name
 pbs.met.res.LFC <- lfcShrink(lps.dds, 
-                             contrast=c("SampleType", "CD14_MET_LPS", "CD14_PBS"),
-                             parallel=TRUE)
+                             contrast=c("SampleType", "CD14_MET_LPS",
+                                        "CD14_PBS"))
 pbs.met.res$log2FoldChange <- pbs.met.res.LFC$log2FoldChange
 pbs.met.res$lfcSE <- pbs.met.res.LFC$lfcSE
 metresOrdered <- pbs.met.res[order(pbs.met.res$padj), ]
@@ -1243,13 +1239,12 @@ for(i in 1:8){
   keep <- rowSums(counts(sub.dis.dds)) >= 10
   sub.dis.dds <- sub.dis.dds[keep,]
   sub.dis.dds
-  sub.dis.dds <- DESeq(sub.dis.dds, parallel=TRUE)
-  disease.res <- results(sub.dis.dds, parallel=TRUE, 
+  sub.dis.dds <- DESeq(sub.dis.dds)
+  disease.res <- results(sub.dis.dds, 
                    independentFiltering=TRUE, alpha=0.05)
   disease.res$Gene <- mcols(sub.dis.dds)$gene_name
   disease.res.LFC <- lfcShrink(sub.dis.dds, 
-                               coef=length(resultsNames(sub.dis.dds)),
-                               parallel=TRUE)
+                               coef=length(resultsNames(sub.dis.dds)))
   disease.res$log2FoldChange <- disease.res.LFC$log2FoldChange
   disease.res$lfcSE <- disease.res.LFC$lfcSE
   
@@ -1417,7 +1412,7 @@ ggplot(d, aes(x=Disease, y=count, color=Disease)) +
   ylab("AC008268.2") +
   facet_wrap(~ SampleType, nrow=2)
 
-g <- which(mcols(disease.dds)$Gene == "TPRG1")
+g <- which(mcols(disease.dds)$gene_name == "TPRG1")
 d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
                 intgroup=c("SampleType", "Disease"),
                 returnData=TRUE)
@@ -1429,7 +1424,7 @@ ggplot(d, aes(x=Disease, y=count, color=Disease)) +
   ylab("TPRG1") +
   facet_wrap(~ SampleType, nrow=2)
 
-g <- which(mcols(disease.dds)$Gene == "ITGB1")
+g <- which(mcols(disease.dds)$gene_name == "ITGB1")
 d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
                 intgroup=c("SampleType", "Disease"),
                 returnData=TRUE)
@@ -1441,7 +1436,7 @@ ggplot(d, aes(x=Disease, y=count, color=Disease)) +
   ylab("ITGB1") +
   facet_wrap(~ SampleType, nrow=2)
 
-g <- which(mcols(disease.dds)$Gene == "ASNS")
+g <- which(mcols(disease.dds)$gene_name == "ASNS")
 d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
                 intgroup=c("SampleType", "Disease"),
                 returnData=TRUE)
@@ -1453,7 +1448,7 @@ ggplot(d, aes(x=Disease, y=count, color=Disease)) +
   ylab("ASNS") +
   facet_wrap(~ SampleType, nrow=2)
 
-g <- which(mcols(disease.dds)$Gene == "KIAA1671")
+g <- which(mcols(disease.dds)$gene_name == "KIAA1671")
 d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
                 intgroup=c("SampleType", "Disease"),
                 returnData=TRUE)
@@ -1465,7 +1460,7 @@ ggplot(d, aes(x=Disease, y=count, color=Disease)) +
   ylab("KIAA1671") +
   facet_wrap(~ SampleType, nrow=2)
 
-g <- which(mcols(disease.dds)$Gene == "TRGV5")
+g <- which(mcols(disease.dds)$gene_name == "TRGV5")
 d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
                 intgroup=c("SampleType", "Disease"),
                 returnData=TRUE)
@@ -1529,7 +1524,7 @@ for(i in 1:8){
 grid.arrange(grobs=disease.plot.list, ncol=3)
 ```
 
-```{r disease-genes, warning=FALSE}
+```{r disease-genes-bmi, warning=FALSE}
 g <- which(mcols(disease.dds)$gene_name == "SIRT1")
 d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
                 intgroup=c("SampleType", "Disease", "BMI"),
@@ -1572,12 +1567,11 @@ for(i in 1:8){
   print(cell.type)
   sub.rep.dds <- repeat.dds[, repeat.dds$SampleType == cell.type]
   sub.rep.dds@colData <- droplevels(sub.rep.dds@colData)
-  sub.rep.dds <- DESeq(sub.rep.dds, parallel=TRUE)
-  repeat.res <- results(sub.rep.dds, parallel=TRUE, 
+  sub.rep.dds <- DESeq(sub.rep.dds)
+  repeat.res <- results(sub.rep.dds, 
                    independentFiltering=TRUE, alpha=0.05)
-  repeat.res$Gene <- mcols(repeat.dds)$Gene
-  repeat.res.LFC <- lfcShrink(sub.rep.dds, coef=length(resultsNames(sub.rep.dds)),
-                               parallel=TRUE)
+  repeat.res$Gene <- mcols(repeat.dds)$gene_name
+  repeat.res.LFC <- lfcShrink(sub.rep.dds, coef=length(resultsNames(sub.rep.dds)))
   repeat.res$log2FoldChange <- repeat.res.LFC$log2FoldChange
   repeat.res$lfcSE <- repeat.res.LFC$lfcSE
   repeatresOrdered <- repeat.res[order(repeat.res$padj), ]
@@ -1607,7 +1601,7 @@ The single gene that is strongly significant in CD14_MET is shown. It encodes a
 predicted transmembrane protein 
 
 ```{r repeat-genes-cd14met, warning=FALSE}
-g <- which(mcols(repeat.dds)$Gene == "TMEM185A")
+g <- which(mcols(repeat.dds)$gene_name == "TMEM185A")
 d <- plotCounts(repeat.dds, gene=g, replaced=TRUE,
                 intgroup=c("SampleType", "Disease", "PatientNumber", 
                            "Repeat.Sample"),
@@ -1637,11 +1631,11 @@ bp_repeat_GOBP_lea
 ### CD14 vs CD8
 
 ```{r cd14-cd8, message=FALSE}
-MT.res <- results(lps.dds, parallel=TRUE, independentFiltering=TRUE, alpha=0.05,
+MT.res <- results(lps.dds, independentFiltering=TRUE, alpha=0.05,
                   contrast=c("SampleType", "CD14", "CD8"))
-MT.res$Gene <- mcols(lps.dds)$Gene
+MT.res$Gene <- mcols(lps.dds)$gene_name
 MT.res.LFC <- lfcShrink(lps.dds, 
-                        contrast=c("SampleType", "CD14", "CD8"), parallel=TRUE)
+                        contrast=c("SampleType", "CD14", "CD8"))
 MT.res$log2FoldChange <- MT.res.LFC$log2FoldChange
 MT.res$lfcSE <- MT.res.LFC$lfcSE
 MTresOrdered <- MT.res[order(MT.res$padj), ]
@@ -1678,12 +1672,11 @@ bp_MT_GOBP_lea
 ### PBMC vs Paxgene
 
 ```{r pbmc-paxgene, message=FALSE}
-pp.res <- results(lps.dds, parallel=TRUE, independentFiltering=TRUE, alpha=0.05,
+pp.res <- results(lps.dds, independentFiltering=TRUE, alpha=0.05,
                   contrast=c("SampleType", "PBMC", "Paxgene"))
-pp.res$Gene <- mcols(lps.dds)$Gene
+pp.res$Gene <- mcols(lps.dds)$gene_name
 pp.res.LFC <- lfcShrink(lps.dds, 
-                        contrast=c("SampleType", "PBMC", "Paxgene"),
-                        parallel=TRUE)
+                        contrast=c("SampleType", "PBMC", "Paxgene"))
 pp.res$log2FoldChange <- pp.res.LFC$log2FoldChange
 pp.res$lfcSE <- pp.res.LFC$lfcSE
 ppresOrdered <- pp.res[order(pp.res$padj), ]
