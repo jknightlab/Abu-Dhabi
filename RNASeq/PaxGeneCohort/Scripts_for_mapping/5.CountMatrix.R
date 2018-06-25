@@ -13,11 +13,12 @@ DT <- list()
 # read each file as array element of DT, keep gene id and count, and rename
 # with sample name only
 for (i in 1:length(myfiles) ) {
-  DT[[myfiles[i]]] <- read.table(myfiles[i], header = T, stringsAsFactors = FALSE)
-  DT[[myfiles[i]]] <- DT[[myfiles[i]]][, c(1, 7)]
-  cnts <- gsub("/well/jknight/AbuDhabiRNA/Katie/mapping/4.gene.counts/", "", myfiles[i])
-  cnts <- gsub(".counts.txt", "", cnts)
-  colnames(DT[[myfiles[i]]]) <- c("ID", cnts)
+  tryCatch({
+    DT[[myfiles[i]]] <- read.table(myfiles[i], header = F, stringsAsFactors = FALSE)
+    cnts <- gsub("/well/jknight/AbuDhabiRNA/Katie/mapping/4.gene.counts/", "", myfiles[i])
+    cnts <- gsub(".counts.txt", "", cnts)
+    colnames(DT[[myfiles[i]]]) <- c("ID", cnts)
+  }, error=function(e) print(myfiles[i]))
 }
 
 # merge all elements based on first ID columns
@@ -53,7 +54,8 @@ data.all.summary <- data[grep("^ENS", rownames(data), perl=TRUE, invert=TRUE), ]
 data.all.summary
 
 # write summary to file
-write.table(data.all.summary, file = "~/Abu Dhabi/PilotRNA-hisat_counts_all-summary.txt", sep="\t")
+write.table(data.all.summary, file = "/well/jknight/AbuDhabiRNA/Katie/PaxGene_counts_all_summary.txt", 
+            sep="\t")
 
 ####################################
 # take all data rows to a new table
@@ -63,8 +65,7 @@ data.all <- data[grep("^ENS", rownames(data), perl=TRUE, invert=FALSE), ]
 head(data.all, 3)
 
 # write data to file
-write.table(data.all, file = "~/Abu Dhabi/PaxGeneCohort/Full-count-data.txt", sep="\t")
-write.table(data.all, file = "/well/jknight/AbuDhabiRNA/PaxGene-count-data.txt", sep="\t")
+write.table(data.all, file = "/well/jknight/AbuDhabiRNA/Katie/PaxGene_count_data.txt", sep="\t")
 
 # cleanup intermediate objects
 rm(y, z, i, DT)
