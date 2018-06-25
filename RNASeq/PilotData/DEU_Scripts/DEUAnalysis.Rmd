@@ -1,0 +1,129 @@
+---
+title: "Differential Exon Usage"
+author: "Katie Burnham"
+date: '`r Sys.Date()`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE)
+
+library(kburnhamfunctions)
+library(DEXSeq)
+
+BPPARAM <- SnowParam(workers = 4)
+```
+
+Exon counts were acquired following the DEXSeq work flow. Briefly, two Python 
+scripts are provided to firstly prepare a flattened annotation file from the GTF
+file, and then to count reads containing each exon from the sorted bam file. These
+individual count files are then read into R and used to make a DEXSeq Data Set:
+
+```{r data}
+load("U:/Abu-Dhabi/RNASeq/PilotData/ExonCountsFiltered.RData")
+dxd
+dxd@colData$Disease <- as.factor(dxd@colData$Disease)
+metrics <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/Dedup_QC_metric.txt")
+full.s.info <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/PilotSampleInfoExpanded.txt",
+                          stringsAsFactors=F, row.names=1)
+full.s.info$PatientNumber <- as.character(full.s.info$PatientNumber)
+full.s.info$Disease[full.s.info$PatientNumber == 115] <- "T2D"
+
+
+# remove the same samples
+to.rm <- as.character(metrics$Sample[metrics$Mapping.Rate < 0.4])
+mixup <- as.character(full.s.info$SampleId[
+  grep("94_CD14_.*|148_CD14_.*|100_CD14_.*|102_CD14_.*",
+       full.s.info$SampleNameFull)])
+to.rm <- c(to.rm, mixup)  
+to.rm <- which(dxd@colData$SampleId %in% to.rm)
+dxd <- dxd[, -to.rm]
+
+dxd <- dxd[, dxd@colData$Repeat.Sample == FALSE]
+
+for(i in 1:8){
+  sample.type <- levels(dxd@colData$SampleType)[i]
+  assign(paste(sample.type, ".dxd", sep=""), 
+         dxd[, dxd@colData$SampleType == sample.type])
+}
+
+design(PBMC.dxd) <- formula(~SampleId + exon + Disease:exon)
+```
+
+Each row of this data set contains firstly the count data for a given exon 
+("this"), and the count data from the sum of all the other exons belonging to the
+same gene ("others"). The specified design is `r design(dxd)`.
+
+As in DESeq2, normalisation is achieved by estimation of size factors.
+
+```{r size-factors}
+PBMC.dxd <- estimateSizeFactors(PBMC.dxd)
+plot(sizeFactors(PBMC.dxd),
+     metrics$Mapped.Unique[match(PBMC.dxd@colData$DataName, metrics$Sample)])
+```
+
+The read-counting function distributed with the DEXSeq package splits the coding
+parts of the genes into non-overlapping exon bins and counts the number of reads
+overlapping each of these bins. Reads that overlap multiple bins are assigned to
+all of them, which increases the correlation between the bin counts and implies
+that the sum of the bin counts can significantly exceed the number of sequencing
+reads in the experiment. With default settings, genes that overlap each other are
+aggregated into a composite gene complex containing all exon bins of the original
+genes. The identifier of this complex is obtained by combining the identifiers of
+the aggregated genes. In practice, this could lead to difficulties in result
+interpretation, and the differential splicing detection could potentially be
+affected by overall differential gene expression of a subset of the genes involved
+in a complex. 
+
+Isoform prefiltering has been demonstrated to improve accurary for DEU analysis.
+[https://github.com/markrobinsonuzh/diff_splice_paper](https://github.com/markrobinsonuzh/diff_splice_paper).
+
+
+The variability of the data is then estimated, in order to distinguish biological 
+and technical variation from real effects on exon usage. Biological replicates 
+allow the inference of this noise as characterised by dispersion. Variance
+information is shared across exons and genes in an intensity-dependent manner.
+
+The per-exon dispersion estimates are plotted against the mean normalised count,
+along with the resulting fitted values and the shrunken dispersion estimates.
+(This part is very slow to run, even on galahad)
+
+```{r dispersion}
+PBMC.dxd <- estimateDispersions(PBMC.dxd)
+pdf("U:/Abu-Dhabi/RNASeq/PilotData/PBMC_exons_Disp.pdf", onefile=TRUE)
+plotDispEsts(PBMC.dxd)
+
+# fData(dxd)$dispersion <- fData(dxd)$dispBeforeSharing
+```
+
+Differential exon usage is detected by comparing a model including an interaction
+term between the experimental condition and the exon, and the null model. These
+are fit for each counting bin, with two count values ("this" exon and all 
+"others").
+
+```{r deu}
+PBMC.dxd <- testForDEU(PBMC.dxd)
+PBMC.dxd <- estimateExonFoldChanges(PBMC.dxd, fitExpToVar="Disease")
+dxr1 <- DEXSeqResults(PBMC.dxd)
+table(dxr1$padj < 0.05)
+table (tapply(dxr1$padj < 0.05, dxr1$groupID, any))
+yrange <- range(dxr1$log2fold_T2D_Control, na.rm=TRUE)
+plotMA(dxr1, cex=0.8, ylim=c(-5, 5))
+```
+
+```{r results}
+sig <- subset(dxr1, padj < 0.05)
+sig <- sig$groupID
+
+for(i in 1:length(sig)){
+  plotDEXSeq(dxr1, sig[i], legend=TRUE, cex.axis=1.2, cex=1.3, lwd=2,
+           fitExpToVar="Disease")
+  
+  plotDEXSeq(dxr1, sig[i], displayTranscripts=TRUE, legend=TRUE,
+           cex.axis=1.2, cex=1.3, lwd=2, fitExpToVar="Disease")
+  
+  plotDEXSeq(dxr1, sig[i], expression=FALSE, norCounts=TRUE,
+           legend=TRUE, cex.axis=1.2, cex=1.3, lwd=2, fitExpToVar="Disease")
+}
+dev.off()
+```
