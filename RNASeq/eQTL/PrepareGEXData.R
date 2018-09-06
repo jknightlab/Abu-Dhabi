@@ -1,0 +1,77 @@
+# Prepare gene expression data for eQTL mapping
+
+library(limma)
+library(edgeR)
+library(DESeq2)
+library(ggplot2)
+
+# Raw count data for Paxgene samples
+
+load("PaxGeneCohort/dds.Rdata")
+
+load("U:/Abu-Dhabi/RNASeq/Full_transcript_metadata.RData")
+colnames(mygtf)[1] <- "chr"
+m1 <- match(rownames(assay(dds)), mygtf$gene_id)
+assay.info <- mygtf[m1, ]
+assay.info$TSS <- assay.info$start
+assay.info$TSS[which(assay.info$strand == "-")] <- assay.info$end[which(assay.info$strand == "-")]
+
+counts <- counts(dds)
+s.info <- colData(dds)
+
+dge <- DGEList(counts=counts, genes=assay.info, samples=s.info)
+
+# Quantile normalisation and log2 transformation
+counts.quantile <- voom(data.matrix(counts), plot=TRUE, normalize="quantile")
+
+# PCA
+pcaData <- prcomp(t(counts.quantile@.Data[[1]]), scale.=TRUE, center=TRUE)
+ggplot(data.frame(pcaData$x), aes(x = PC1, y = PC2)) +
+  geom_point(size=3) +
+  coord_fixed() +
+  theme_bw()
+
+# Correct for total number of reads
+counts.num <- apply(counts, 2, function(x) x/sum(x))
+
+# PCA
+pcaData <- prcomp(t(counts.num), scale.=TRUE, center=TRUE)
+ggplot(data.frame(pcaData$x), aes(x = PC1, y = PC2)) +
+  geom_point(size=3) +
+  coord_fixed() +
+  theme_bw()
+
+# Remove outliers
+
+# TMM and log2 transformation, correct for total mapped reads
+dge.tmm <- calcNormFactors(dge, method="TMM")
+# prior.count = average count to be added to each observation to avoid log(0)
+dge.tmm.logcpm <- cpm(dge.tmm, log=TRUE, normalized.lib.sizes=TRUE, prior.count=3)
+
+write.table(dge.tmm.logcpm, "eQTL/Normalised_GEX_data.txt", sep="\t", row.names=F)
+write.table(assay.info, "U:/Abu-Dhabi/RNASeq/Full_transcript_metadata.txt", 
+            sep="\t", row.names=F)
+
+gex.final.t <- t(gex.final)
+write.table(gex.final.t, "eQTL/Normalised_GEX_data_t.txt", sep="\t", row.names=F)
+
+# Generate gene expression PCs
+pcs <- prcomp(gex.final.t, scale=TRUE)
+write.table(pcs$x, "eQTL/GEX_PCs.txt", sep="\t", quote=FALSE)
+
+# Cumulative variance explained by the first 35 gene expression PCs
+props <- cumsum(((pcs$sdev^2)/sum(pcs$sdev^2)))[1:35]
+
+ggplot(data.frame(pcs$x), aes(x = PC1, y = PC2)) +
+  geom_point(size=3) +
+  coord_fixed() +
+  theme_bw() +
+  xlab(paste0("PC1 (", round(props[1], 3)*100, "%)")) +
+  ylab(paste0("PC2 (", round(props[2], 3)*100, "%)"))
+
+ggplot(data.frame(pcs$x), aes(x = PC3, y = PC4)) +
+  geom_point(size=3) +
+  coord_fixed() +
+  theme_bw() +
+  xlab(paste0("PC3 (", round(props[3], 3)*100, "%)")) +
+  ylab(paste0("PC4 (", round(props[4], 3)*100, "%)"))

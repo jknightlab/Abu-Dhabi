@@ -1,0 +1,300 @@
+# QC of Abu Dhabi genotyping data
+
+sh update_build.sh AD_736_multi_ethnic_chip_update_strand Multi-EthnicGlobal_A1-b38.strand AD_736_multi_ethnic_chip_update_strand_b38
+
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_b38 --split-x hg19 --make-bed --out AD_736_multi_ethnic_chip_update_strand_for_sex_check
+
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_for_sex_check --indep-pairphase 20000 2000 0.5 --out AD_736_multi_ethnic_chip_update_strand_for_sex_check
+
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_for_sex_check --extract AD_736_multi_ethnic_chip_update_strand_for_sex_check.prune.in --check-sex --out AD_736_multi_ethnic_chip_update_strand_sex_check
+
+grep PROBLEM AD_736_multi_ethnic_chip_update_strand_sex_check.sexcheck > sexprobs
+awk '{print $1}' sexprobs > samples_to_remove_sex.txt
+
+# 36 problems
+
+R
+sex.check <- read.delim("AD_736_multi_ethnic_chip_update_strand_sex_check.sexcheck", sep="")
+pdf("Sex_check_F_estimates.pdf")
+hist(sex.check$F, breaks=20)
+dev.off()
+
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_for_sex_check --extract AD_736_multi_ethnic_chip_update_strand_for_sex_check.prune.in --check-sex 0.6 0.8 --out AD_736_multi_ethnic_chip_update_strand_sex_check
+grep PROBLEM AD_736_multi_ethnic_chip_update_strand_sex_check.sexcheck > sexprobs
+awk '{print $1}' sexprobs > fail_sex.txt
+	
+FID				ID		PEDSEX	SNPSEX	STATUS	F_ESTIMATE					NOTES
+FG39         F39            1            2      PROBLEM      0.09279					In sample information file female - OK
+FG83         F83            1            2      PROBLEM       0.1075					In sample information file male - EXCLUDE
+FG84         F84            1            2      PROBLEM     -0.03102					In sample information file male - EXCLUDE
+FG15        FG15            1            2      PROBLEM      0.01395					In sample information file female - OK
+FG39         M39            2            1      PROBLEM       0.9453					In sample information file female - EXCLUDE
+FG84         M84            2            1      PROBLEM       0.9495					In sample information file female - EXCLUDE
+S6          S6            0            2      PROBLEM     -0.01568					In sample information file female - OK
+S70         S70            1            2      PROBLEM       0.5567					In sample information file male - exclude
+S189        S189            1            2      PROBLEM       0.1268					In sample information file female - OK
+S325        S325            2            1      PROBLEM       0.9476					In sample information file male - OK
+S395        S395            2            1      PROBLEM       0.9474					In sample information file female - EXCLUDE
+S480        S480            1            2      PROBLEM       0.1023					In sample information file male - EXCLUDE
+
+# remove OK samples from fail_sex
+
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_for_sex_check --impute-sex 0.6 0.8 --make-bed --out AD_736_multi_ethnic_chip_update_strand_sex_check
+
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_b38 --missing --out AD_736_multi_ethnic_chip_update_strand_b38
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_b38 --het --out AD_736_multi_ethnic_chip_update_strand_b38
+
+R
+imiss <- read.table("AD_736_multi_ethnic_chip_update_strand_b38.imiss", h=T)
+imiss$logF_MISS <- log10(imiss[, 6])
+
+het <- read.table("AD_736_multi_ethnic_chip_update_strand_b38.het", h=T)
+het$meanHet <- (het$N.NM. - het$O.HOM.) / het$N.NM.
+
+colors  <- densCols(imiss$logF_MISS, het$meanHet)
+
+y.min <- min(c(het$meanHet, (mean(het$meanHet) - (3 * sd(het$meanHet)))))
+y.max <- max(c(het$meanHet, (mean(het$meanHet) + (3 * sd(het$meanHet)))))
+
+pdf("AD_736_multi_ethnic_chip_update_strand_b38_missing_het.pdf")
+plot(imiss$logF_MISS, het$meanHet, col=colors, pch=20, xlab="Proportion of missing genotypes", ylab="Heterozygosity rate", ylim=c(y.min, y.max))
+abline(h=mean(het$meanHet) - (3 * sd(het$meanHet)), col="RED", lty=2)
+abline(h=mean(het$meanHet) + (3 * sd(het$meanHet)), col="RED", lty=2)
+abline(v=log10(0.03), col="RED", lty=2)
+dev.off()
+
+missing <- as.character(imiss[which(imiss$logF_MISS > log10(0.03)), 1])
+print(missing)
+# "FG64" "FG69" "S70"  "S97"  "S191"
+
+write.table(missing, "fail_b38_missing", sep="\t", row.names=F, quote=F, col.names=F)
+
+bad.het <- as.character(het[
+  which(het$meanHet < mean(het$meanHet) - (3 * sd(het$meanHet)) |
+        het$meanHet > mean(het$meanHet) + (3 * sd(het$meanHet))), 1])
+print(bad.het)
+# S191
+write.table(bad.het, "fail_b38_het", sep="\t", row.names=F, quote=F, col.names=F)
+
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_b38 --extract AD_736_multi_ethnic_chip_update_strand_for_sex_check.prune.in --genome  --out AD_736_multi_ethnic_chip_update_strand_b38
+
+R
+ibd <- read.delim("AD_736_multi_ethnic_chip_update_strand_b38.genome", sep="")
+pi_hat <- subset(ibd, PI_HAT > 0.1875)
+
+# Lots of problems - not sure what to do about pop structure => include PCS?
+
+
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_b38 --read-genome AD_736_multi_ethnic_chip_update_strand_b38.genome --cluster --mds-plot 4 --extract AD_736_multi_ethnic_chip_update_strand_for_sex_check.prune.in --out AD_736_multi_ethnic_chip_update_strand_b38_mds_plot
+
+R
+mds <- read.delim("AD_736_multi_ethnic_chip_update_strand_b38_mds_plot.mds", sep="")
+mds$QC_removal <- "None"
+
+sex <- read.delim("samples_to_remove_sex.txt", header=F)
+mds$QC_removal[match(sex$V1, mds$IID)] <- "Sex"
+
+missing <- read.delim("fail_b38_missing")
+mds$QC_removal[match(missing$x, mds$IID)] <- "Missingness"
+
+mds$QC_removal <- as.factor(mds$QC_removal)
+
+pdf("mds_plots.pdf", onefile=T, width=11, height=9)
+
+palette(c("red", "blue", "black", "green"))
+plot(mds$C1, mds$C2, col=mds$QC_removal, xlab="First dimension", 
+     ylab="Second dimension", pch=16)
+legend("topright", legend=unique(mds$QC_removal), 
+       pch=16, col=unique(mds$QC_removal), cex=0.7, 
+       title="QC removal reason")
+
+plot(mds$C1, mds$C3, col=mds$QC_removal, xlab="First dimension", 
+     ylab="Third dimension", pch=16)
+legend("topright", legend=unique(mds$QC_removal), 
+       pch=16, col=unique(mds$QC_removal), cex=0.7, title="QC removal reason")
+
+plot(mds$C2, mds$C3, col=mds$QC_removal, xlab="Second dimension", 
+     ylab="Third dimension", pch=16)
+legend("topright", legend=unique(mds$QC_removal), 
+       pch=16, col=unique(mds$QC_removal), cex=0.7, title="QC removal reason")
+
+plot(mds$C3, mds$C4, col=mds$QC_removal, xlab="Third dimension", 
+     ylab="Fourth dimension", pch=16)
+legend("topright", legend=unique(mds$QC_removal), 
+       pch=16, col=unique(mds$QC_removal), cex=0.7, title="QC removal reason")
+
+mds <- subset(mds, QC_removal == "None")
+mds <- droplevels(mds)
+
+plot(mds$C1, mds$C2, col=mds$QC_removal, xlab="First dimension", 
+     ylab="Second dimension", pch=16)
+
+plot(mds$C1, mds$C3, col=mds$QC_removal, xlab="First dimension", 
+     ylab="Third dimension", pch=16)
+
+plot(mds$C2, mds$C3, col=mds$QC_removal, xlab="Second dimension", 
+     ylab="Third dimension", pch=16)
+
+plot(mds$C3, mds$C4, col=mds$QC_removal, xlab="Third dimension", 
+     ylab="Fourth dimension", pch=16)
+dev.off()
+q()
+n
+
+cat fail* | sort -k1 | uniq > fail-qc-inds.txt
+awk '{print $1,$1}' fail-qc-inds.txt > fail-qc-inds2.txt
+
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_b38 --read-genome AD_736_multi_ethnic_chip_update_strand_b38.genome --remove fail-qc-inds2.txt --cluster --mds-plot 4 --extract AD_736_multi_ethnic_chip_update_strand_for_sex_check.prune.in --out AD_736_multi_ethnic_chip_update_strand_no_fails_mds_plot
+
+
+R
+mds <- read.delim("AD_736_multi_ethnic_chip_update_strand_no_fails_mds_plot.mds", sep="")
+mds$QC_removal <- "None"
+mds$QC_removal <- as.factor(mds$QC_removal)
+
+pdf("mds_plots_no_fails.pdf", onefile=T, width=11, height=9)
+
+plot(mds$C1, mds$C2, col=mds$QC_removal, xlab="First dimension", 
+     ylab="Second dimension", pch=16)
+plot(mds$C1, mds$C3, col=mds$QC_removal, xlab="First dimension", 
+     ylab="Third dimension", pch=16)
+plot(mds$C2, mds$C3, col=mds$QC_removal, xlab="Second dimension", 
+     ylab="Third dimension", pch=16)
+plot(mds$C3, mds$C4, col=mds$QC_removal, xlab="Third dimension", 
+     ylab="Fourth dimension", pch=16)
+dev.off()
+
+
+
+
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_sex_check --remove fail-qc-inds2.txt --make-bed --out AD_736_multi_ethnic_chip_update_strand_inds_removed
+
+
+
+# Per-marker QC
+
+## SNPs with excessive missingness
+
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_inds_removed --missing --out AD_736_multi_ethnic_chip_update_strand_inds_removed
+
+R
+pdf("missing.hist.inds.removed.pdf")
+missing <- read.table("AD_736_multi_ethnic_chip_update_strand_inds_removed.lmiss", header=T)
+hist(missing[, 5], breaks=100, main="Histogram of SNP missingness")
+dev.off()
+
+
+
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_inds_removed -test-missing --out AD_736_multi_ethnic_chip_update_strand_inds_removed
+
+awk '$5 < 0.00001{print $2}' AD_736_multi_ethnic_chip_update_strand_inds_removed.missing > fail-diffmiss-qc.txt
+
+
+
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_inds_removed --exclude fail-diffmiss-qc.txt --geno 0.05 --hwe 0.00001 --maf 0.05 --make-bed --out AD_736_multi_ethnic_chip_update_strand_inds_snps_removed
+
+64410 MB RAM detected; reserving 32205 MB for main workspace.
+1779696 variants loaded from .bim file.
+726 people (274 males, 452 females) loaded from .fam.
+640 phenotype values loaded from .fam.
+--exclude: 1779506 variants remaining.
+Using 1 thread (no multithreaded calculations invoked).
+Before main variant filters, 675 founders and 51 nonfounders present.
+Calculating allele frequencies... done.
+Warning: 118300 het. haploid genotypes present (see
+AD_736_multi_ethnic_chip_update_strand_inds_snps_removed.hh ); many commands
+treat these as missing.
+Warning: Nonmissing nonmale Y chromosome genotype(s) present; many commands
+treat these as missing.
+Total genotyping rate is 0.998735.
+5075 variants removed due to missing genotype data (--geno).
+Warning: --hwe observation counts vary by more than 10%, due to the X
+chromosome.  You may want to use a less stringent --hwe p-value threshold for X
+chromosome variants.
+--hwe: 4765 variants removed due to Hardy-Weinberg exact test.
+1117636 variants removed due to minor allele threshold(s)
+(--maf/--max-maf/--mac/--max-mac).
+652030 variants and 726 people pass filters and QC.
+Among remaining phenotypes, 130 are cases and 510 are controls.  (86 phenotypes
+are missing.)
+--make-bed to AD_736_multi_ethnic_chip_update_strand_inds_snps_removed.bed +
+AD_736_multi_ethnic_chip_update_strand_inds_snps_removed.bim +
+AD_736_multi_ethnic_chip_update_strand_inds_snps_removed.fam ... done.
+
+
+
+# Need to remove parents if the child is retained
+
+R
+fam <- read.delim("AD_736_multi_ethnic_chip_update_strand_inds_snps_removed.fam", 
+sep="", header=F, stringsAsFactors=F)
+parents <- which(fam$V1 != fam$V2)
+
+which(table(fam$V2) > 1)
+
+
+
+
+
+
+to.rm <- fam[parents, 1:2]
+write.table(to.rm, "Parents_to_rm.txt", sep="\t", row.names=FALSE, quote=F)
+
+
+
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_inds_removed --remove Parents_to_rm.txt --exclude fail-diffmiss-qc.txt --geno 0.05 --hwe 0.00001 --maf 0.05 --make-bed --out AD_736_multi_ethnic_chip_update_strand_inds_snps_removed_no_parents
+
+  --bfile AD_736_multi_ethnic_chip_update_strand_inds_removed
+  --exclude fail-diffmiss-qc.txt
+  --geno 0.05
+  --hwe 0.00001
+  --maf 0.05
+  --make-bed
+  --out AD_736_multi_ethnic_chip_update_strand_inds_snps_removed_no_parents
+  --remove Parents_to_rm.txt
+
+64410 MB RAM detected; reserving 32205 MB for main workspace.
+1779696 variants loaded from .bim file.
+726 people (274 males, 452 females) loaded from .fam.
+640 phenotype values loaded from .fam.
+--exclude: 1779506 variants remaining.
+--remove: 640 people remaining.
+Using 1 thread (no multithreaded calculations invoked).
+Before main variant filters, 589 founders and 51 nonfounders present.
+Calculating allele frequencies... done.
+Warning: 102560 het. haploid genotypes present (see
+AD_736_multi_ethnic_chip_update_strand_inds_snps_removed_no_parents.hh ); many
+commands treat these as missing.
+Warning: Nonmissing nonmale Y chromosome genotype(s) present; many commands
+treat these as missing.
+Total genotyping rate in remaining samples is 0.998715.
+4920 variants removed due to missing genotype data (--geno).
+Warning: --hwe observation counts vary by more than 10%, due to the X
+chromosome.  You may want to use a less stringent --hwe p-value threshold for X
+chromosome variants.
+--hwe: 4822 variants removed due to Hardy-Weinberg exact test.
+1115968 variants removed due to minor allele threshold(s)
+(--maf/--max-maf/--mac/--max-mac).
+653796 variants and 640 people pass filters and QC.
+Among remaining phenotypes, 130 are cases and 510 are controls.
+--make-bed to
+AD_736_multi_ethnic_chip_update_strand_inds_snps_removed_no_parents.bed +
+AD_736_multi_ethnic_chip_update_strand_inds_snps_removed_no_parents.bim +
+AD_736_multi_ethnic_chip_update_strand_inds_snps_removed_no_parents.fam ...
+done.
+
+
+
+
+
+
+
+
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_inds_snps_removed_no_parents --indep-pairwise 50 5 0.2 --out AD_736_multi_ethnic_chip_update_strand_inds_snps_removed_no_parents_noLD
+
+# Use the file “high-LD-regions.txt” from Anderson et al
+# This is hg 17 so use liftover to hg19
+
+~/plink --bfile AD_736_multi_ethnic_chip_update_strand_inds_snps_removed_no_parents --exclude /well/jknight/Sepsis/Genotyping/high_LD-regions-hg19.txt --range --make-bed --out GAinS_eqtl_genotyping_NoLongRangeLD
+
+~/plink --bfile GAinS_eqtl_genotyping_NoLongRangeLD --extract GAinS_eqtl_genotyping_noLD.prune.in --pca --out ../../../Sepsis_eQTL/Genotyping_Data/eqtl_genotyping_pca
