@@ -56,30 +56,186 @@ library(XGR)
 
 ```{r load-data}
 load("PaxGeneCohort/dds.Rdata")
-load("U:/PANDIT/transcript_metadata.RData")
+load("U:/PANDIT/ExpressionAnalysis/transcript_metadata.RData")
 colnames(attributeData)[1] <- "chr"
 m1 <- match(rownames(assay(dds)), attributeData$gene_id)
 assay.info <- attributeData[m1, ]
 mcols(dds) <- assay.info
 table(mcols(dds)$gene_biotype)
+
+dds$Control.or.T2D[which(dds$Control.or.T2D == "NGT")] <- "Control"
+
+# Need to edit the sample IDs so repeat samples from the same person can be linked
+table(dds$Repeat)
+repeats <- dds$RESEARCH..[which(dds$Repeat == "Y")]
+dds.repeats <- dds[, dds$RESEARCH.. %in% repeats]
 ```
 
-```{r lps-response, message=FALSE}
+```{r disease, message=FALSE}
+dds <- dds[, (dds$Repeat == "N")]
 dds$Sex <- as.factor(dds$Sex)
-design(dds) <- ~ BMI + Sex + Control.or.T2D
-dds <- dds[, !is.na(dds@colData$BMI)]
+# design(dds) <- ~ BMI + Sex + Control.or.T2D
+# dds.dis <- dds[, dds$Control.or.T2D %in% c("Control", "T2D")]
+# dds.dis <- dds.dis[, !is.na(dds.dis@colData$BMI)]
+# dds.dis <- dds.dis[, !is.na(dds.dis@colData$Sex)]
+# dds.dis
+# dds.dis@colData <- droplevels(dds.dis@colData)
+# 
+# # analysis
+# dds.dis <- DESeq(dds.dis, parallel=TRUE)
+# save(dds.dis, file="PaxGeneCohort/dds-disease-deseq.Rdata")
+# 
+# # results
+# dds.res <- results(dds.dis, parallel=TRUE,
+#                    contrast=c("Control.or.T2D", "T2D", "Control"),
+#                    independentFiltering=TRUE, alpha=0.05)
+# dds.res$Gene <- mcols(dds.dis)$gene_name
+# 
+# plot(metadata(dds.res)$filterNumRej,
+#      type="b", ylab="Number of rejections",
+#      xlab="Quantiles of filter", pch=16)
+# lines(metadata(dds.res)$lo.fit, col="red")
+# abline(v=metadata(dds.res)$filterTheta)
+# 
+# dds.res.LFC <- lfcShrink(dds.dis, 
+#                          contrast=c("Control.or.T2D", "T2D", "Control"),
+#                          parallel=TRUE)
+# dds.res$log2FoldChange <- dds.res.LFC$log2FoldChange
+# dds.res$lfcSE <- dds.res.LFC$lfcSE
+# ddsresOrdered <- dds.res[order(dds.res$padj), ]
+# ddsresOrdered <- ddsresOrdered[(complete.cases(ddsresOrdered)), ]
+# summary(ddsresOrdered)
+# res05 <- results(dds.dis, alpha=0.05)
+
+# write.table(lpsresOrdered,
+            # file="U:/Abu-Dhabi/RNASeq/PilotData/LPSResponse_All_Patients.txt",
+            # sep="\t")
+```
+
+```{r volcano}
+# ddsresOrdered$Significance <- ifelse(ddsresOrdered$padj < 0.05, 
+#                           "Significant", "Not Significant")
+# ggplot(data.frame(ddsresOrdered), aes(log2FoldChange, -log10(padj))) +
+#   geom_point(aes(col=Significance)) +
+#   scale_color_manual(values=c("grey", "red")) +
+#   ylab("-log10(adjusted p value)") +
+#   xlab("log2(fold change)") +
+#   ggtitle("Type 2 Diabetes vs Control") +
+#   theme_bw() +
+#   geom_text_repel(data=subset(data.frame(ddsresOrdered), Significance == "Significant" &
+#                                 abs(log2FoldChange) > log(1.5, 2)),
+#                   aes(label=Gene))
+```
+
+```{r xgr}
+RData.location <- "http://galahad.well.ox.ac.uk/bigdata"
+# genes <- ddsresOrdered$Gene[ddsresOrdered$Significance == "Significant"]
+# background <- ddsresOrdered$Gene
+# 
+# eTerm_T2D <- xEnricherGenes(data=genes, 
+#                             background=background, 
+#                             ontology="REACTOME", 
+#                             ontology.algorithm="lea", 
+#                             RData.location=RData.location)
+# eTerm_T2D_bp <- xEnrichBarplot(eTerm_T2D, top_num="auto", displayBy="fdr")
+# eTerm_T2D_bp
+```
+
+
+# Quantitative traits
+
+```{r HbA1C, message=FALSE}
+design(dds) <- ~ Sex + HbA1C....
 dds <- dds[, !is.na(dds@colData$Sex)]
+dds.hb1ac <- dds[, !is.na(dds@colData$HbA1C....)]
+dds.hb1ac
+dds.hb1ac@colData <- droplevels(dds.hb1ac@colData)
+
+# analysis
+dds.hb1ac <- DESeq(dds.hb1ac)
+# save(dds.hb1ac, file="PaxGeneCohort/dds.hb1ac-hba1c-deseq.Rdata")
+
+# results
+dds.hb1ac.res <- results(dds.hb1ac, independentFiltering=TRUE, alpha=0.05)
+dds.hb1ac.res$Gene <- mcols(dds.hb1ac)$gene_name
+
+plot(metadata(dds.hb1ac.res)$filterNumRej,
+     type="b", ylab="Number of rejections",
+     xlab="Quantiles of filter", pch=16)
+lines(metadata(dds.hb1ac.res)$lo.fit, col="red")
+abline(v=metadata(dds.hb1ac.res)$filterTheta)
+
+dds.hb1ac.res.LFC <- lfcShrink(dds.hb1ac, coef=3)
+dds.hb1ac.res$log2FoldChange <- dds.hb1ac.res.LFC$log2FoldChange
+dds.hb1ac.res$lfcSE <- dds.hb1ac.res.LFC$lfcSE
+dds.hb1acresOrdered <- dds.hb1ac.res[order(dds.hb1ac.res$padj), ]
+dds.hb1acresOrdered <- dds.hb1acresOrdered[(complete.cases(dds.hb1acresOrdered)), ]
+summary(dds.hb1acresOrdered)
+res05 <- results(dds.hb1ac, alpha=0.05)
+
+# write.table(dds.hb1acresOrdered,
+            # file="U:/Abu-Dhabi/RNASeq/PaxGeneCohort/HbA1C_DE.txt",
+            # sep="\t")
+
+dds.hb1acresOrdered$Significance <- ifelse(dds.hb1acresOrdered$padj < 0.05,
+                                           "Significant", "Not Significant")
+ggplot(data.frame(dds.hb1acresOrdered), aes(log2FoldChange, -log10(padj))) +
+  geom_point(aes(col=Significance)) +
+  scale_color_manual(values=c("grey", "red")) +
+  ylab("-log10(adjusted p value)") +
+  xlab("log2(fold change)") +
+  ggtitle("Hb1ac") +
+  theme_bw() +
+  geom_text_repel(data=subset(data.frame(dds.hb1acresOrdered), 
+                              Significance == "Significant" &
+                                abs(log2FoldChange) > 0.05),
+                  aes(label=Gene))
+
+g <- which(mcols(dds.hb1ac)$gene_name == "NEFL")
+d <- plotCounts(dds.hb1ac, gene=g, replaced=TRUE,
+                intgroup=c("HbA1C...."),
+                returnData=TRUE)
+ggplot(d, aes(x=HbA1C...., y=count)) + 
+  geom_point(size=3) + 
+  scale_y_log10() +
+  theme_bw() +
+  ylab("NEFL")
+
+g <- which(mcols(dds.hb1ac)$gene_name == "SERPINF1")
+d <- plotCounts(dds.hb1ac, gene=g, replaced=TRUE,
+                intgroup=c("HbA1C...."),
+                returnData=TRUE)
+ggplot(d, aes(x=HbA1C...., y=count)) + 
+  geom_point(size=3) + 
+  scale_y_log10() +
+  theme_bw() +
+  ylab("SERPINF1")
+
+genes <- dds.hb1acresOrdered$Gene[dds.hb1acresOrdered$Significance ==
+                                    "Significant"]
+background <- dds.hb1acresOrdered$Gene
+
+eTerm_T2D <- xEnricherGenes(data=genes,
+                            background=background,
+                            ontology="GOBP",
+                            ontology.algorithm="lea",
+                            RData.location=RData.location)
+eTerm_T2D_bp <- xEnrichBarplot(eTerm_T2D, top_num="auto", displayBy="fdr",
+                               FDR.cutoff=0.01)
+eTerm_T2D_bp
+```
+
+```{r glucose, message=FALSE}
+design(dds) <- ~ Glucose..mmol.l..Consent..FG.sheet.
+dds <- dds[, !is.na(dds@colData$Glucose..mmol.l..Consent..FG.sheet.)]
 dds
 dds@colData <- droplevels(dds@colData)
 
 # analysis
-dds <- DESeq(dds, parallel=TRUE)
-save(dds, file="PaxGeneCohort/dds-deseq.Rdata")
+dds <- DESeq(dds)
 
 # results
-dds.res <- results(dds, parallel=TRUE,
-                   contrast=c("Control.or.T2D", "T2D", "Control"),
-                   independentFiltering=TRUE, alpha=0.05)
+dds.res <- results(dds, parallel=TRUE, independentFiltering=TRUE, alpha=0.05)
 dds.res$Gene <- mcols(dds)$gene_name
 
 plot(metadata(dds.res)$filterNumRej,
@@ -88,18 +244,39 @@ plot(metadata(dds.res)$filterNumRej,
 lines(metadata(dds.res)$lo.fit, col="red")
 abline(v=metadata(dds.res)$filterTheta)
 
-dds.res.LFC <- lfcShrink(dds, 
-                         contrast=c("Control.or.T2D", "T2D", "Control"),
-                         parallel=TRUE)
-lps.res$log2FoldChange <- lps.res.LFC$log2FoldChange
-lps.res$lfcSE <- lps.res.LFC$lfcSE
-lpsresOrdered <- lps.res[order(lps.res$padj), ]
-lpsresOrdered <- lpsresOrdered[(complete.cases(lpsresOrdered)), ]
-summary(lpsresOrdered)
-res05 <- results(lps.dds, alpha=0.05)
+dds.res.LFC <- lfcShrink(dds, coef=1)
+dds.res$log2FoldChange <- dds.res.LFC$log2FoldChange
+dds.res$lfcSE <- dds.res.LFC$lfcSE
+ddsresOrdered <- dds.res[order(dds.res$padj), ]
+ddsresOrdered <- ddsresOrdered[(complete.cases(ddsresOrdered)), ]
+summary(ddsresOrdered)
+res05 <- results(dds, alpha=0.05)
 
 # write.table(lpsresOrdered,
             # file="U:/Abu-Dhabi/RNASeq/PilotData/LPSResponse_All_Patients.txt",
             # sep="\t")
-```
 
+ddsresOrdered$Significance <- ifelse(ddsresOrdered$padj < 0.05, 
+                          "Significant", "Not Significant")
+ggplot(data.frame(ddsresOrdered), aes(log2FoldChange, -log10(padj))) +
+  geom_point(aes(col=Significance)) +
+  scale_color_manual(values=c("grey", "red")) +
+  ylab("-log10(adjusted p value)") +
+  xlab("log2(fold change)") +
+  ggtitle("Glucose") +
+  theme_bw() +
+  geom_text_repel(data=subset(data.frame(ddsresOrdered), ddsresOrdered$padj < 0.0005),
+                  aes(label=Gene))
+
+genes <- ddsresOrdered$Gene[ddsresOrdered$Significance == "Significant"]
+background <- ddsresOrdered$Gene
+
+eTerm_glucose <- xEnricherGenes(data=genes, 
+                            background=background, 
+                            ontology="DO", 
+                            ontology.algorithm="lea", 
+                            RData.location=RData.location)
+eTerm_glucose_bp <- xEnrichBarplot(eTerm_glucose, top_num="auto", displayBy="fdr")
+eTerm_glucose_bp
+
+```
