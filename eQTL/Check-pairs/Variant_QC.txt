@@ -1,0 +1,202 @@
+```{bash}
+cd /well/jknight/AbuDhabiRNA/eQTL/Expression/Variants
+
+for F in */input.vcf ; do bgzip ${F} ; done
+for F in */output.vcf ; do bgzip ${F} ; done
+for F in */output.vcf.gz ; do tabix -p vcf ${F}  ; done
+
+# vcf-merge */output.vcf.gz > AD_635_merged.vcf
+
+# /well/jknight/RNASeqSTARPipeline/plink2 --vcf AD_635_merged.vcf --out AD_635_merged --allow-extra-chr
+```
+
+#################################################################################
+
+# For each individual
+# Take the list of filtered variants from the RNA-seq data
+# From the clean lifted-over genotyping data extract that individual and those SNPs
+# Check concordance/IBD?
+
+PROJECT_DIR=/well/jknight/AbuDhabiRNA/eQTL/Expression/Variants
+cd $PROJECT_DIR
+
+SAMPLEFILE=/well/jknight/AbuDhabiRNA/Katie/STAR/mapping.info.txt
+
+############################################
+# Make a plink bed file for each individual
+############################################
+
+while read -r line
+do
+  sample="$(echo "$line" | cut -f 1)"
+  echo $sample
+  
+  SAMPLE_DIR=$PROJECT_DIR/$sample
+	cd $SAMPLE_DIR
+	
+  ~/plink --vcf $SAMPLE_DIR/output.vcf.gz --make-bed --allow-extra-chr --out $SAMPLE_DIR/$sample
+
+done < $SAMPLEFILE
+
+ls */*.bed
+# 635 but could be empty
+ls */*temporary.bed
+# 8 empty - all failed library prep
+rm */*.nosex
+
+############################################
+# Make a list of the SNPs in each individual
+############################################
+
+while read -r line
+do
+  sample="$(echo "$line" | cut -f 1)"
+  echo $sample
+  
+  SAMPLE_DIR=$PROJECT_DIR/$sample
+	cd $SAMPLE_DIR
+	
+  less $sample.bim | grep rs | cut -f 2 > $SAMPLE_DIR/snptoextract.$sample.txt
+done < $SAMPLEFILE
+
+
+ls */snptoextract* | wc -l
+# 635 but could be empty
+wc -l */snptoextract* | sort -k1 -n > n_called_snps.txt
+
+         0 FG134/snptoextract.FG134.txt
+         0 FG152/snptoextract.FG152.txt
+         0 FG153/snptoextract.FG153.txt
+         0 FG31M/snptoextract.FG31M.txt
+         0 FG3R/snptoextract.FG3R.txt
+         0 FG45R/snptoextract.FG45R.txt
+         0 FG5R/snptoextract.FG5R.txt
+         0 FG76R/snptoextract.FG76R.txt
+        43 FG120F/snptoextract.FG120F.txt
+      3161 S107/snptoextract.S107.txt
+     12979 S321/snptoextract.S321.txt
+     15677 S420/snptoextract.S420.txt
+     23659 S62/snptoextract.S62.txt
+
+The rest are 200,000-400,000
+
+############################################
+# Make individual extraction files
+############################################
+
+############################################
+Extract these SNPs from the genotyping data
+############################################
+
+GENO=/well/jknight/AbuDhabiRNA/eQTL/Genotyping/AD_736_multi_ethnic_chip_clean_b38
+
+while read -r line
+do
+
+  sample="$(echo "$line" | cut -f 1)"
+  echo $sample
+  
+  sampleg="$(echo "$line" | cut -f 1 | sed -e 's/R//')"
+  echo $sampleg
+  
+  SAMPLE_DIR=$PROJECT_DIR/$sample
+	cd $SAMPLE_DIR
+	
+	grep -w $sampleg $GENO.fam | awk '{print $1, $2}' > $SAMPLE_DIR/$sample.id.txt
+	
+  ~/plink --bfile $GENO --extract $SAMPLE_DIR/snptoextract.$sample.txt --keep $SAMPLE_DIR/$sample.id.txt --allow-extra-chr --make-bed --out $SAMPLE_DIR/$sample.geno
+  
+  cp $sample.id.txt $sample.update.txt
+  echo -e "$(cat $sample.update.txt) \t " > $sample.update.txt
+  echo "$(cat $sample.update.txt)$sample" > $sample.update.txt
+  echo -e "$(cat $sample.update.txt) \t " > $sample.update.txt
+  echo "$(cat $sample.update.txt)$sample" > $sample.update.txt
+  
+  ~/plink --bfile $SAMPLE_DIR/$sample.geno --update-ids $sample.update.txt --make-bed --out $SAMPLE_DIR/$sample.geno
+
+done <$SAMPLEFILE
+
+ls */*.geno.bed | wc -l
+# 517 matched in genotyping file
+wc -l */*id.txt | sort -k1 -n | less
+
+############################################
+# Combine pairs
+############################################
+
+#grep R $SAMPLEFILE > $PROJECT_DIR/samplefilerepeats.txt
+#SAMPLEFILER=$PROJECT_DIR/samplefilerepeats.txt
+
+while read -r line
+do
+  sample="$(echo "$line" | cut -f 1)"
+  echo $sample
+  
+  SAMPLE_DIR=$PROJECT_DIR/$sample
+	cd $SAMPLE_DIR
+
+  ~/plink --bfile $SAMPLE_DIR/$sample.geno --bmerge $SAMPLE_DIR/$sample --allow-extra-chr --make-bed --out $SAMPLE_DIR/$sample.pair.check --extract $SAMPLE_DIR/snptoextract.$sample.txt
+  
+  ~/plink --bfile $SAMPLE_DIR/$sample --exclude $SAMPLE_DIR/$sample.pair.check-merge.missnp --allow-extra-chr --make-bed --out $SAMPLE_DIR/$sample.red
+  
+  ~/plink --bfile $SAMPLE_DIR/$sample.geno --exclude $SAMPLE_DIR/$sample.pair.check-merge.missnp --allow-extra-chr --make-bed --out $SAMPLE_DIR/$sample.geno.red
+  
+  ~/plink --bfile $SAMPLE_DIR/$sample.geno.red --bmerge $SAMPLE_DIR/$sample.red --allow-extra-chr --make-bed --out $SAMPLE_DIR/$sample.pair.check --merge-mode 6
+
+grep concordant $sample.pair.check.log | awk '{print $8}' > $sample.concordance.rate.txt
+
+done <$SAMPLEFILE
+#done <$SAMPLEFILER
+
+
+
+
+# .diff (merge conflict report)
+# Produced by --merge/--bmerge + --merge-mode 6 or 7.
+# A text file with a header line, and then one line per conflict with the following five fields:
+# SNP	Variant identifier
+# FID	Family ID
+# IID	Within-family ID
+# NEW	Genotype in merge fileset (named in --merge-list file/--merge/--bmerge)
+# OLD	Genotype in reference fileset (loaded with e.g. --bfile)
+
+ls */*concordance.rate.txt | wc -l
+wc -l */*concordance.rate.txt | grep -w 0 | awk '{print $2}' | xargs rm
+
+
+
+R
+paths <- list.files(path=".", pattern="*concordance.rate.txt", full.names=T, recursive=T)
+sample.names <- list.files(path=".", pattern="*concordance.rate.txt", full.names=F, recursive=T)
+sample.names <- unlist(strsplit(sample.names, "/"))[seq(1, 2*length(sample.names), 2)]
+
+# create a list to store single sample tables
+DT <- list()
+
+# read each file as array element of DT, keep gene id and count, and rename
+# with sample name only
+for (i in 1:length(paths) ) {
+  DT[[sample.names[i]]] <- read.table(paths[i], header = F, stringsAsFactors = FALSE)
+    colnames(DT[[sample.names[i]]]) <- sample.names[i]
+}
+
+cbindlist <- function(list) {
+  n <- length(list)
+  res <- list[[1]]
+  for (i in 2:n) res <- cbind(res, list[[i]])
+  return(res)
+}
+
+concordance <- cbindlist(DT)
+concordance <- data.frame(t(concordance))
+colnames(concordance) <- c("Concordance")
+concordance$Concordance <- gsub(".$", "", concordance$Concordance)
+concordance$Concordance <- as.numeric(concordance$Concordance)
+range(concordance$Concordance, na.rm=T)
+
+library(ggplot2)
+pdf("Genotyping_concordance_with_GEX.pdf", useDingbats=F)
+ggplot(concordance, aes(Concordance)) + geom_histogram(bins=20) + theme_bw()
+dev.off()
+
+write.table(concordance, "~/Abu-Dhabi/RNASeq/eQTL/Check-pairs/concordance.txt", sep="\t")
