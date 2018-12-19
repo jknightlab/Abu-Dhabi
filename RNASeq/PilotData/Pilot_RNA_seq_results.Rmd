@@ -11,6 +11,7 @@ editor_options:
 knitr::opts_chunk$set(echo = FALSE, message=FALSE)
 
 library(kburnhamfunctions)
+library(gdata)
 # install.packages("Vennerable", repos = "http://R-Forge.R-project.org")
 
 # Vennerable needs graph and RBGL, from bioconductor repository
@@ -27,6 +28,7 @@ library(gtools)
 library(Vennerable)
 
 # Differential expression analysis
+library(genefilter)
 library(DESeq2)
 
 # plotting figures
@@ -54,10 +56,10 @@ library(EnsDb.Hsapiens.v75)
 library(XGR)
 ```
 
-This summarises analysis of the pilot RNA-seq data from the Abu Dhabi cohort. 
-This comprises samples from 19 individuals (9 controls, 10 with type 2 diabetes -
-patient 115 updated to T2D based on full clinical information although listed
-as a control).
+This documents summarises analysis of pilot RNA-seq data from the Abu Dhabi 
+cohort metformin response experiment. This comprises samples from 19 individuals 
+(9 controls, 10 with type 2 diabetes). NB - patient 115 has been updated to T2D 
+based on full clinical information although listed as a control initially).
 7 of these have follow up samples taken at a repeat visit 3 months later. For 
 each individual and time point, there are 8 different sample types:
 
@@ -77,7 +79,7 @@ each individual and time point, there are 8 different sample types:
 
 - CD14_MET_LPS
 
-This gives a total of 208 samples.
+This gives a total of 208 samples with sequencing data.
 
 **Data locations:**
 
@@ -85,7 +87,8 @@ Fastq files: /well/jknight/Kate/RNAseq/P160233-REX
 
 Sample information in the README file
 
-Clinical information looked up from /groups/jknight/Group_members_personal_data_storage/Lawrence/Abu Dabi Patient medical data/Collated Family information.xlsm
+Clinical information looked up from 
+/groups/jknight/Group_members_personal_data_storage/Lawrence/Abu Dabi Patient medical data/Collated Family information.xlsm
 
 Mapping of the sequencing data to the human transcriptome was done by Core 
 Bioinformatics using hisat against the human_glk_v37.ERCC reference (Options 
@@ -112,8 +115,14 @@ counts <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/PilotRNA-hisat-count-data.tx
 full.s.info <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/PilotSampleInfoExpanded.txt",
                           stringsAsFactors=F, row.names=1)
 full.s.info$PatientNumber <- as.character(full.s.info$PatientNumber)
-full.s.info$Disease[full.s.info$PatientNumber == 115] <- "T2D"
 
+update <- read.xls("N:/jknight/Group_members_personal_data_storage/Lawrence/Abu Dabi Patient medical data/FG patient data including 2000 samples (submitted) (updated with diabetes status 18-09-2018).xlsx")
+
+full.s.info$Disease <- update$Status.for.transcriptomics[match(
+  paste0("FG", full.s.info$PatientNumber),
+  update$Sample.name.on.plate.or.Anonymization.Number)]
+full.s.info <- droplevels(full.s.info)
+table(full.s.info$Disease)
 metrics <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/Dedup_QC_metric.txt")
 full.metrics <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/Full_QC_metric.txt")
 
@@ -121,7 +130,9 @@ full.metrics <- read.delim("U:/Abu-Dhabi/RNASeq/PilotData/Full_QC_metric.txt")
 all(colnames(counts) == rownames(full.s.info))
 ```
 
-The mapping quality control metrics are explored:
+The mapping quality control metrics are explored to determine the quality of the
+sequencing data and exclude poor quality samples that would distort downstream
+analysis.
 
 ```{r mapping-QC}
 metrics$SampleType <- full.s.info$SampleType[match(metrics$Sample, 
@@ -137,10 +148,10 @@ ggplot(metrics, aes(SampleType, Total.Purity.Filtered.Reads.Sequenced)) +
   geom_boxplot(outlier.shape=NA) +
   geom_point(aes(shape=Repeat, colour=Disease)) +
   theme_bw() +
-  ylab("Total (purity filtered) reads sequenced") +
+  ylab("Total (purity filtered) reads sequenced)") +
   xlab("Sample Type") +
   ggtitle("Total Reads", 
-          subtitle="The total number of reads sequenced per sample is sufficient for all samples")
+          subtitle="The total number of reads sequenced per sample is sufficient for all samples\nand doesn't depend on sample type or timepoint")
 
 ggplot(metrics, aes(SampleType, Mapped)) +
   geom_boxplot(outlier.shape=NA) +
@@ -155,7 +166,7 @@ ggplot(metrics, aes(Total.Purity.Filtered.Reads.Sequenced, Mapped,
   geom_point() +
   theme_bw() +
   ggtitle("Mapped Reads vs Total Reads Sequenced", 
-          "This highlights four samples (4 x R115) where a large number of reads were sequenced but not mapped") +
+          "This highlights four samples (4 x R115 cultured CD14) where a large number of sequenced reads were not mapped \nAs these are all from the same patient and time point this seems to be a sample issue") +
   ylab("Number of reads mapped to human genome") +
   xlab("Total (purity filtered) reads sequenced")
 
@@ -164,15 +175,16 @@ ggplot(metrics, aes(SampleType, Mapping.Rate)) +
   geom_point(aes(shape=Repeat, colour=Disease)) +
   theme_bw() +
   ggtitle("Mapping Rate",
-          "Highlighting samples with very low mapping rates - 4 samples from R115, R86 CD14_LPS, 119 CD14_MET)") +
+          "Highlighting samples with very low mapping rates (<40%) - \nthe 4 samples from R115, R86 CD14_LPS, and 119 CD14_MET") +
   ylab("Percentage of sequenced reads mapped to human genome") +
-  xlab("Sample Type")
+  xlab("Sample Type") +
+  geom_hline(yintercept=0.4)
 
 ggplot(metrics, aes(SampleType, Base.Mismatch.Rate)) +
   geom_boxplot(outlier.shape=NA) +
   geom_point(aes(shape=Repeat, colour=Disease)) +
   theme_bw() +
-  ggtitle("Base Mismatch Rate", "Low across all samples") +
+  ggtitle("Base Mismatch Rate", "Low across all samples, 94 CD8 outlying") +
   ylab("Base mismatch rate") +
   xlab("Sample Type")
 
@@ -203,20 +215,19 @@ ggplot(metrics, aes(SampleType, Genes.Detected)) +
   ylab("Number of unique genes/transcripts with at least 5 reads mapped") +
   xlab("Sample Type")
 
-# density plot
-# sample.type <- as.factor(full.s.info$SampleType)
-# plot(density(log(counts[, 1]+1)), main="Distribution of raw intensities",
-#      col=sample.type[1], ylim=c(0, 5.5), xlim=c(-0.8, 3),
-#      cex.main=0.8)
-# for (i in 2:ncol(counts)){
-#   lines(density(log(counts[, i]+1)), col=sample.type[i])
-# }
-# legend("topright", legend=unique(sample.type), 
-#        col=c(1:8), lty=1, cex=0.5)
+sample.type <- as.factor(full.s.info$SampleType)
+plot(density(log(counts[, 1]+1)), main="Distribution of raw intensities",
+     col=sample.type[1], ylim=c(0, 5.5), xlim=c(-0.8, 3),
+     cex.main=0.8)
+for (i in 2:ncol(counts)){
+  lines(density(log(counts[, i]+1)), col=sample.type[i])
+}
+legend("topright", legend=unique(sample.type),
+       col=c(1:8), lty=1, cex=0.5)
 ```
 
-Based on these plots, I decided to filter primarily by the mapping rate, and
-remove the samples with less than 40% of reads mapped. These are:
+Based on these plots, the samples with less than 40% of reads mapped were 
+excluded. These are:
 
 ```{r to-remove}
 to.rm <- as.character(metrics$Sample[metrics$Mapping.Rate < 0.4])
@@ -226,22 +237,19 @@ print(full.s.info$SampleNameFull[to.rm])
 
 # Differential expression analysis
 
-Explanatory text and the protocol used are largely from
+Explanatory text and the protocol used are largely taken from
 [http://www.bioconductor.org/help/workflows/rnaseqGene/](http://www.bioconductor.org/help/workflows/rnaseqGene/), 
 'Count-based differential expression analysis of RNA sequencing data using R and
 Bioconductor - Anders et al', and the DESeq2 manual.
 
-DESeq2 uses the DESeqDataSet object class to store the read counts and the 
-intermediate estimated quantities. This has range-base functionality, allowing 
-for easier integration with e.g. ChIP-seq peaks. This object must have an
-associated design formula expressing the variables used in modelling. This is 
-used to estimate the dispersions and log2 FC, and can be changed later if all the
-DE steps are subsequently repeated. These data are therefore converted into a
-DESeq2 dataset with the sample type and disease status included in the model to
-begin with.
+DESeq2 requires the data to have an associated design formula expressing the 
+variables used in modelling. This is used to estimate the dispersions and log2 
+FC, and can be changed later if all the DE steps are subsequently repeated. These
+data are therefore converted into a DESeq2 dataset with the sample type and 
+disease status included in the model to begin with.
 
 NB - under default settings, the final term in the model is the variable of 
-interest and control level is first.
+interest, with the first level coded as the control group.
 
 ```{r convert-to-DESeq2DataSet, warning=FALSE}
 counts.rm <- counts[, -to.rm]
@@ -266,55 +274,57 @@ legend("topright", legend=unique(sample.type),
 
 ### Pre-filtering
 
-While it is not necessary to pre-filter low count genes before running the DESeq2 
-functions, by removing rows in which there are very few reads, we reduce the 
-memory size of the dds data object, and we increase the speed of the 
-transformation and testing functions. Here we perform a minimal pre-filtering to
-keep only rows that have at least 10 reads total (across all samples). Note that
-more strict filtering is applied to increase power via independent filtering on
-the mean of normalized counts within the results function.
+We perform a minimal pre-filtering to keep only genes that have at least 10 reads
+in 7 or more samples (the number of samples in the smallest biological subgroup).
+Note that more strict filtering is applied to increase power via independent 
+filtering on the mean of normalized counts within the results function.
 
 The genes identified in this data set may be classified as follows:
 
 ```{r pre-filtering}
-keep <- rowSums(counts(dds)) >= 10
-dds <- dds[keep,]
+# filter to keep genes with count >10 in at least 7 samples (the smallest biologically relevant group, 7 in these data)
+k <- kOverA(k=7, A=10)
+ffun <- filterfun(k)
+wh1 <- genefilter(counts.rm, ffun)
+sum(wh1) # check how many
+filt <- wh1 >=1
+dds <- dds[filt, ]
 dds
 ```
 
 ## Exploratory analysis and visualisation
 
-Initially we want to look at an overview of the data and how the samples relate
+Initially we perform some exploratory analysis and look at how the samples relate
 to each other. Principal component analysis (PCA) takes all the gene expression 
-data and converts it to a smaller number of independent variables (components)
-that summarise the variation in the data.
+data and reduces it to a smaller number of independent variables (components)
+that summarise the variation in the data i.e. global variation in gene expression.
 
 #### Normalisation
 
 Many common statistical methods for exploratory analysis of multidimensional data,
 for example clustering and PCA, work best for data that generally has the same
 range of variance at different ranges of the mean values (i.e. homoskedastic). For
-RNA-seq counts, however, the expected variance grows with the mean. If one
-performs PCA directly on a matrix of normalized counts, the resulting plot
+RNA-seq counts, however, the expected variance increases with the mean. If one
+performs PCA directly on a matrix of normalised counts, the resulting plot
 typically depends mostly on the genes with highest counts because they show the
 largest absolute differences between samples. A simple strategy to avoid this is
-to take the logarithm of the normalized count values plus a pseudocount of 1;
+to take the logarithm of the normalised count values plus a pseudocount of 1;
 however, depending on the choice of pseudocount, now the genes with the lowest
 counts will contribute a great deal of noise to the resulting plot, because taking
 the logarithm of small counts actually inflates their variance. 
 
-DESeq2 offers two transformations for count data that stabilize the variance
+DESeq2 offers two transformations for count data that stabilise the variance
 across the mean: the regularized-logarithm transformation or rlog (Love, Huber,
 and Anders 2014), and the variance stabilizing transformation (VST) for negative
 binomial data with a dispersion-mean trend (Anders and Huber 2010). For genes with
 high counts, the rlog and VST will give similar results to the ordinary log2
-transformation of normalized counts. For genes with lower counts, however, the
+transformation of normalised counts. For genes with lower counts, however, the
 values are shrunken towards the genes’ averages across all samples. The
 rlog-transformed or VST data then becomes approximately homoskedastic, and can be
 used directly for computing distances between samples, making PCA plots, or as
 input to downstream methods which perform best with homoskedastic data.
 
-The rlog tends to work well on small datasets (n <30), sometimes outperforming the
+The rlog tends to work well on small datasets (n <30), sometimes outperforming
 VST when there is a large range of sequencing depth across samples (an order of
 magnitude difference). The VST is much faster to compute and is less sensitive to
 high count outliers than the rlog, so is therefore recommended for large datasets
@@ -324,7 +334,7 @@ experimental design is not used to estimate global variability in the counts i.e
 more appropriate for QC purposes.
 
 These plots show the relationship between mean expression and sd before and after
-normalisation.
+normalisation, confirming that the normalisation has been reasonably successful.
 
 ```{r vst, fig.height=3}
 vsd <- vst(dds, blind=TRUE)
@@ -343,13 +353,14 @@ melt.exprs$Type <- full.s.info.rm$SampleType[match(melt.exprs$X2,
 ggplot(melt.exprs, aes(X2, value, colour=Type)) +
   geom_boxplot() +
   theme_bw() +
-  # facet_wrap(~ Type, nrow=4, scales="free_x") +
+  facet_wrap(~ Type, nrow=4, scales="free_x") +
   theme(legend.position="bottom") +
   ggtitle("Boxplots of all data", 
           "There are no outlying samples, although it looks like there are some differences by sample type") +
   xlab("Sample")
 
-pcaData <- plotPCA(vsd, intgroup = c("Disease", "SampleType"), returnData = TRUE)
+pcaData <- plotPCA(vsd, intgroup = c("Disease", "SampleType"), 
+                   returnData = TRUE, ntop=nrow(dds))
 percentVar <- round(100 * attr(pcaData, "percentVar"))
 ```
 
@@ -357,8 +368,9 @@ PCA is then used to explore the relationship between the samples. This shows tha
 a large proportion of the variance (`r paste0(percentVar[1], "% variance")`) is
 explained by PC1, which separates the naive and treated cells and also the
 non-cultured CD14 cells from the other cell types. There are no clear differences
-between diabetes and control samples. Repeat samples were thought to be of poorer
-quality, but this does not seem to have an impact on the clustering here.
+between diabetes and control samples (shown by the ellipses). Repeat samples were
+thought to be of poorer quality, but this does not seem to have an impact on the 
+clustering here.
 
 ```{r pca}
 ggplot(pcaData, aes(x = PC1, y = PC2, color = SampleType, shape = Disease)) +
@@ -366,21 +378,22 @@ ggplot(pcaData, aes(x = PC1, y = PC2, color = SampleType, shape = Disease)) +
   xlab(paste0("PC1: ", percentVar[1], "% variance")) +
   ylab(paste0("PC2: ", percentVar[2], "% variance")) +
   coord_fixed() +
-  theme_bw()
+  theme_bw() + 
+  stat_ellipse(aes(group=Disease))
 ```
 
 A second PCA restricted to the cultured (and treated) CD14s shows the general
-separation between LPS treated and non-LPS treated cells. However, there are a few
-samples that don't fall within treatment clusters, and this seems to relate to the
-patient number e.g. Patient 102 samples are swapped round, (before being removed
-for the above QC reasons 115 all clustered together in the centre) and 148 are all
-at the top left. 
+separation between LPS treated and non-LPS treated cells (shown by the ellipses). 
+However, there are a few samples that don't fall within treatment clusters, and 
+this seems to relate to the patient number e.g. Patient 102 samples are swapped 
+round, before being removed for the above QC reasons 115 all clustered together 
+in the centre, and 148 are all at the top left. 
 
 ```{r pca-treated}
 vsd.treat <- vsd[, vsd$SampleType %in% c("CD14_PBS", "CD14_LPS", 
                                          "CD14_MET", "CD14_MET_LPS")]
 vsd.treat$SampleType <- droplevels(vsd.treat$SampleType)
-pcaData <- plotPCA(vsd.treat, 
+pcaData <- plotPCA(vsd.treat, ntop=nrow(vsd.treat),
                    intgroup = c("Disease", "SampleType", "PatientNumber", 
                                 "SampleNumber", "Repeat.Sample"), 
                    returnData = TRUE)
@@ -391,7 +404,7 @@ ggplot(pcaData, aes(x=PC1, y=PC2, color=SampleType, shape=Disease)) +
   xlab(paste0("PC1: ", percentVar[1], "% variance")) +
   ylab(paste0("PC2: ", percentVar[2], "% variance")) +
   coord_fixed() +
-  theme_bw() +
+  theme_bw() + stat_ellipse(aes(group=SampleType), linetype = 1) +
   geom_text_repel(data=pcaData[pcaData$PatientNumber %in% c(94, 100, 102, 148), ],
                   aes(label=SampleNumber))
 ```
@@ -400,7 +413,7 @@ This can be seen clearly in the line plot of PC1, where the majority of
 individuals show the same pattern across treatments but some clearly stand out.
 Specifically, patient 94 looks like the CD14_LPS and CD14_PBS samples have been
 swapped, patient 148 perhaps did not get stimulated with LPS, and patients 100 
-and 104 look like the LPS treated samples were swapped with the non-treated
+and 102 look like the LPS treated samples were swapped with the non-treated
 samples.
 
 ```{r pc1}
@@ -448,7 +461,8 @@ pheatmap(sampleDistMatrix,
 ```
 
 All cultured samples from patients with a clear mix up are removed as we cannot
-definitively resolve the issue.
+definitively resolve the issue, and given the small sample size they would have 
+a significant impact on the analysis.
 
 ```{r remove}
 to.rm <- as.character(metrics$Sample[metrics$Mapping.Rate < 0.4])
@@ -466,26 +480,31 @@ dds <- DESeqDataSetFromMatrix(countData=counts.rm,
                               design= ~ SampleType + Disease)
 dds$Disease <- relevel(dds$Disease, ref = "Control")
 
-keep <- rowSums(counts(dds)) >= 10
-dds <- dds[keep,]
+k <- kOverA(k=7, A=10)
+ffun <- filterfun(k)
+wh1 <- genefilter(counts.rm, ffun)
+sum(wh1) # check how many
+filt <- wh1 >=1
+dds <- dds[filt, ]
 dds
 
 # New PCA
 vsd <- vst(dds, blind=TRUE)
-pcaData <- plotPCA(vsd, intgroup = c("Disease", "SampleType"), returnData = TRUE)
+pcaData <- plotPCA(vsd, intgroup = c("Disease", "SampleType"), returnData = TRUE,
+                   ntop=nrow(dds))
 percentVar <- round(100 * attr(pcaData, "percentVar"))
 ggplot(pcaData, aes(x = PC1, y = PC2, color = SampleType, shape = Disease)) +
   geom_point(size =3) +
   xlab(paste0("PC1: ", percentVar[1], "% variance")) +
   ylab(paste0("PC2: ", percentVar[2], "% variance")) +
   coord_fixed() +
-  theme_bw()
+  theme_bw() +
+  stat_ellipse(aes(group=SampleType))
 ```
 
-The gene symbols are looked up using biomaRt from their ensembl IDs.
+The gene symbols are looked up from their ensembl IDs.
 
 ```{r genes}
-## Making a "short cut"
 edb <- EnsDb.Hsapiens.v75
 ## print some informations for this package
 edb
@@ -505,15 +524,15 @@ table(mcols(dds)$gene_biotype)
 
 There are many possible comparisons to perform here, and the experimental design 
 is complex (different cell types from the same patients and controls and multiple
-time points). Contrasts of interest discussed are:
+time points). Contrasts of interest are:
 
 -	LPS response and the overlap with the same in healthy volunteers
 
--	Modifier effect of MET (CD14 LPS vs PBS vs MET_LPS)
+-	Modifier effect of metformin on the LPS response (CD14 LPS vs PBS vs MET_LPS)
 
--	T2D vs control on all cell types
+-	T2D vs control in each cell type
 
--	2nd visit (post MET treatment)
+-	2nd visit (post metformin treatment)
 
 - CD14 vs CD8
 
@@ -521,61 +540,29 @@ time points). Contrasts of interest discussed are:
 
 - BMI
 
+From the clinical data, it is clear that there are a range of phenotypes. For 
+example, control individuals can have a high BMI, and this should be accounted
+for in the analysis. There are also control individuals with PCOS who are being 
+treated with metformin (see contingency table). When we compare samples from the 
+same patient, all patient-specific factors are accounted for. Following the 
+methods used in GWAS, I have included sex and BMI in the model when contrasting disease and controls. 
+
+```{r clinical}
+ggplot(full.s.info.rm[!duplicated(full.s.info.rm$PatientNumber), ],
+       aes(Disease, HbA1C....)) + 
+  geom_boxplot() + 
+  theme_bw() + 
+  geom_point() +
+  geom_hline(yintercept=6.5)
+
+table(full.s.info.rm[!duplicated(full.s.info.rm$PatientNumber), ]$Disease, 
+      full.s.info.rm[!duplicated(full.s.info.rm$PatientNumber), ]$Metformin.)
+```
+
 ```{r normalisation}
 dds$PatientNumber <- as.factor(dds$PatientNumber)
+dds$Sex <- as.factor(dds$Sex)
 design(dds) <- ~ PatientNumber + SampleType
-# dds <- DESeq(dds, parallel=TRUE)
-
-# normalised counts
-# dds.norm <- counts(dds, normalized=TRUE)
-# 
-# # QC plots
-# sf <- data.frame("Counts"=colSums(dds.norm), "SampleType"=dds$SampleType)
-# sf$No.Genes <- colSums(data.matrix(dds.norm == 0))
-# sf$Raw.Counts <- colSums(counts(dds))
-# 
-# ggplot(sf, aes(Raw.Counts, Counts, colour=No.Genes)) +
-#   geom_point() +
-#   theme_bw() +
-#     scale_colour_gradient(low="gold", high="darkblue") +
-#   ggtitle("Normalised counts against raw counts")
-# 
-# ggplot(sf, aes(Raw.Counts, sizeFactors(dds), colour=SampleType)) +
-#   geom_point() +
-#   theme_bw() +
-#   ggtitle("Size factors vs raw counts")
-# 
-# ggplot(sf, aes(No.Genes, sizeFactors(dds), colour=SampleType)) +
-#   geom_point() +
-#   theme_bw() +
-#   ggtitle("Size factors vs number of genes")
-# 
-# ggplot(sf, aes(Raw.Counts, sizeFactors(dds), colour=SampleType)) +
-#   geom_point() +
-#   theme_bw() +
-#   #scale_colour_gradient(low="gold", high="darkblue")
-#   ggtitle("Size factors vs raw counts")
-# 
-# ggplot(sf, aes(SampleType, Counts)) +
-#   geom_boxplot(outlier.shape=NA) +
-#   geom_point() +
-#   theme_bw() +
-#   ggtitle("Normalised counts")
-# 
-# ggplot(sf, aes(No.Genes, Counts, colour=SampleType)) +
-#   geom_point() +
-#   theme_bw() +
-#   ggtitle("Normalised counts against number of expressed genes")
-# 
-# # density plot
-# plot(density(log(dds.norm[, 1]+1)), main="Distribution of normalised intensities",
-#      col=sf$SampleType[1], ylim=c(0, 0.7),
-#      cex.main=0.8)
-# for (i in 2:ncol(dds.norm)){
-#   lines(density(log(dds.norm[, i]+1)), col=sf$SampleType[i])
-# }
-# legend("topright", legend=unique(sf$SampleType), 
-#        col=c(1:8), lty=1, cex=0.5)
 ```
 
 ### LPS response
@@ -592,7 +579,8 @@ and a cut-off of p-adj <0.05 used.
 P values for specific genes can be NA if all samples have zero counts, if a
 sample has an extreme count outlier (assessed through excluding each sample and 
 calculating Cook's distance), and if there is a low mean normalised count
-(independent filtering). These genes are removed from the results table.
+(independent filtering). Given we've already filtered out low count genes, this
+step may not have a major effect. These genes are removed from the results table.
 Independent filtering is performed based on the mean of normalised counts for each
 gene. A threshold is found that optimises the number of adjusted p values lower
 than the significance level alpha. This optimisation is visualised below and the 
@@ -601,29 +589,13 @@ differential expression results summarised:
 ```{r lps-response, message=FALSE}
 # design
 lps.dds <- dds[, dds@colData@listData$Repeat.Sample == FALSE]
-keep <- rowSums(counts(lps.dds)) >= 10
-lps.dds <- lps.dds[keep,]
 lps.dds@colData <- droplevels(lps.dds@colData)
-lps.dds$SampleType <- relevel(lps.dds$SampleType, ref = "CD14_PBS")
+#lps.dds$SampleType <- relevel(lps.dds$SampleType, ref = "CD14_PBS")
 lps.dds$PatientNumber <- as.factor(lps.dds$PatientNumber)
 table(lps.dds$SampleType)
 
 # analysis
 lps.dds <- DESeq(lps.dds, parallel=TRUE)
-
-# normalised counts
-# lps.dds.norm <- counts(lps.dds, normalized=TRUE)
-
-# density plot
-# plot(density(log(lps.dds.norm[, 1]+1)), 
-#      main="Distribution of normalised intensities",
-#      col=lps.dds$SampleType[1], ylim=c(0, 0.7),
-#      cex.main=0.8)
-# for (i in 2:ncol(lps.dds.norm)){
-#   lines(density(log(lps.dds.norm[, i]+1)), col=lps.dds$SampleType[i])
-# }
-# legend("topright", legend=unique(lps.dds$SampleType), 
-#        col=c(1:8), lty=1, cex=0.5)
 
 # results
 lps.res <- results(lps.dds, parallel=TRUE,
@@ -728,8 +700,8 @@ lpsresOrdered$sig <- ifelse((lpsresOrdered$padj < 0.05 &
 ggplot(data.frame(lpsresOrdered), aes(log2FoldChange, -log10(padj))) +
   geom_point(aes(col=sig)) +
   scale_color_manual(values=c("grey", "red")) +
-  ylab("-log10(adjusted p value") +
-  xlab("log2(fold change") +
+  ylab("-log10(adjusted p value)") +
+  xlab("log2(fold change)") +
   ggtitle("LPS vs PBS CD14") +
   theme_bw() +
   geom_text_repel(data=subset(data.frame(lpsresOrdered), padj<5e-100),
@@ -887,10 +859,12 @@ model is not full rank when accounting for individual, as each individual is
 either in the disease or control group. Individual is recoded within each group,
 levels without samples removed from the design matrix, and the LPS response in
 disease and controls contrasted to test if the treatment effect is different
-across groups. There is 1 significant gene detected; however, the plot shows
-that this is driven by expression in just 2 samples:
+across groups. There are no significant genes.
 
 ```{r lps-response-disease, message=FALSE}
+# remove pre-diabetes
+lps.dds <- lps.dds[, -(which(lps.dds$Disease == "Pre-diabetes"))]
+lps.dds@colData <- droplevels(lps.dds@colData)
 # to account for the effect of disease status
 # two disease status groups with distinct individuals
 tmp <- cbind(lps.dds$Disease, lps.dds$PatientNumber)
@@ -905,7 +879,7 @@ lps.dds.dis$ind.n <- as.factor(as.character(ind.n))
 
 design(lps.dds.dis) <- ~ Disease + Disease:ind.n + Disease:SampleType
 m1 <- model.matrix(design(lps.dds.dis), lps.dds.dis@colData)
-all.zero <- apply(m1, 2, function(x) all(x==0))
+all.zero <- colSums(m1) == 0
 idx <- which(all.zero)
 m1 <- m1[, -idx]
 
@@ -914,36 +888,13 @@ lps.dds.dis <- DESeq(lps.dds.dis, parallel=TRUE, full=m1, betaPrior=FALSE)
 
 # results
 lps.dis.res <- results(lps.dds.dis, parallel=TRUE, 
-                   # lfcThreshold=log(1.5, 2), altHypothesis="greaterAbs",
                    independentFiltering=TRUE, alpha=0.05,
-                   contrast=list("DiseaseT2D.SampleTypeCD14_LPS",
+                   contrast=list("DiseaseT2DM.SampleTypeCD14_LPS",
                                  "DiseaseControl.SampleTypeCD14_LPS"))
 lps.dis.res$Gene <- mcols(lps.dds.dis)$gene_name
 lps.dis.res <- lps.dis.res[(complete.cases(lps.dis.res)), ]
 summary(lps.dis.res)
 lps.dis.res[lps.dis.res$padj < 0.05, ]
-
-plot.list <- list()
-
-for(i in 1:nrow(lps.dis.res[lps.dis.res$padj < 0.05, ])){
-  gene <- rownames(lps.dis.res[lps.dis.res$padj < 0.05, ])[i]
-  d <- plotCounts(lps.dds.dis, gene=gene, 
-                intgroup=c("SampleType", "Disease", "PatientNumber"),
-                returnData=TRUE)
-  d <- subset(d, SampleType %in% c("CD14_LPS", "CD14_PBS"))
-  gene.name <- as.character(mcols(lps.dds)$gene_name[which(rownames(lps.dds) == gene)])
-  if(gene.name == "") gene.name <- as.character(mcols(lps.dds)$gene_id[which(rownames(lps.dds) == gene)])
-  plot.list[[i]] <- ggplot(d, aes(x=SampleType, y=count, color=Disease,
-                                     group=PatientNumber)) + 
-    geom_point(position=position_dodge(0.1)) + 
-    scale_y_log10() +
-    theme_bw() +
-    geom_line(position=position_dodge(0.1)) +
-    ylab(gene.name) +
-  facet_wrap(~ Disease)
-}
-
-grid.arrange(grobs=plot.list, ncol=2)
 ```
 
 I have also analysed the patients and controls separately:
@@ -984,9 +935,9 @@ lpsconresOrdered <- lps.con.res[order(lps.con.res$padj), ]
 lpsconresOrdered <- lpsconresOrdered[(complete.cases(lpsconresOrdered)), ]
 summary(lpsconresOrdered)
 
-write.table(lpsconresOrdered,
-            file="U:/Abu-Dhabi/RNASeq/PilotData/LPSResponse_Controls.txt",
-            sep="\t")
+# write.table(lpsconresOrdered,
+            # file="U:/Abu-Dhabi/RNASeq/PilotData/LPSResponse_Controls.txt",
+            # sep="\t")
 
 # QC plots
 r.lfc <- range(lps.con.res.LFC$log2FoldChange, na.rm=TRUE)
@@ -997,7 +948,6 @@ plotDispEsts(lps.con.dds, main="Dispersion plot")
 
 boxplot(log10(assays(lps.con.dds)[["cooks"]]), range=0, las=2, 
         main="Cook's distance")
-print("One dodgy-looking sample")
 
 hist(lpsconresOrdered$pvalue, breaks=100, main="P value")
 
@@ -1015,7 +965,7 @@ correlation.plot(lps.de, lps.con.de, "Pilot", "Pilot - Controls", "LPS Response"
 lps.t2d.dds <- dds[, dds@colData@listData$SampleType %in% c("CD14_PBS",
                                                             "CD14_LPS")]
 lps.t2d.dds <- lps.t2d.dds[, lps.t2d.dds@colData@listData$Repeat.Sample == FALSE]
-lps.t2d.dds <- lps.t2d.dds[, lps.t2d.dds@colData@listData$Disease == "T2D"]
+lps.t2d.dds <- lps.t2d.dds[, lps.t2d.dds@colData@listData$Disease == "T2DM"]
 # 18 samples remaining (9 individuals, 2 samples each)
 lps.t2d.dds@colData <- droplevels(lps.t2d.dds@colData)
 lps.t2d.dds$SampleType <- relevel(lps.t2d.dds$SampleType, ref="CD14_PBS")
@@ -1048,9 +998,9 @@ lpst2dresOrdered <- lps.t2d.res[order(lps.t2d.res$padj), ]
 lpst2dresOrdered <- lpst2dresOrdered[(complete.cases(lpst2dresOrdered)), ]
 summary(lpst2dresOrdered)
 
-write.table(lpst2dresOrdered,
-            file="U:/Abu-Dhabi/RNASeq/PilotData/LPSResponse_T2D.txt",
-            sep="\t")
+# write.table(lpst2dresOrdered,
+            # file="U:/Abu-Dhabi/RNASeq/PilotData/LPSResponse_T2D.txt",
+            # sep="\t")
 
 # QC plots
 r.lfc <- range(lps.t2d.res.LFC$log2FoldChange, na.rm=TRUE)
@@ -1090,12 +1040,6 @@ eTerm_LPS2_GOBP_lea <- xEnricherGenes(data=data, background=background,
                                      RData.location=RData.location,
                                      verbose=FALSE)
 
-# Compare
-list_eTerm <- list(eTerm_LPSAll_GOBP_lea, eTerm_LPS2_GOBP_lea)
-names(list_eTerm) <- c('Abu Dhabi', 'Fairfax')
-xEnrichCompare(list_eTerm, displayBy="fc", FDR.cutoff=0.001) + 
-  theme(axis.text.y=element_text(size=10))
-
 # Controls
 data <- as.character(lpsconresOrdered$Gene[lpsconresOrdered$padj < 0.05 &
                               abs(lpsconresOrdered$log2FoldChange) > log(1.5, 2)])
@@ -1129,6 +1073,8 @@ xEnrichCompare(list_eTerm, displayBy="fc", FDR.cutoff=0.001) +
 To explore the modifying effect of metformin, we want to contrast the LPS vs PBS
 response to the CD14_MET_LPS vs PBS response.
 
+NB might need to remove 119 as no CD14_MET sample
+
 ```{r lps-met, message=FALSE, warning=FALSE}
 # results
 pbs.met.res <- results(lps.dds, 
@@ -1144,15 +1090,14 @@ pbsmetresOrdered <- pbsmetresOrdered[(complete.cases(pbsmetresOrdered)), ]
 print("CD14_PBS vs CD14_MET")
 summary(pbsmetresOrdered)
 
-d <- plotCounts(lps.dds, gene="ENSG00000242770", 
+d <- plotCounts(lps.dds, gene="ENSG00000262292", 
                 intgroup=c("SampleType", "Disease", "PatientNumber"),
                 returnData=TRUE)
 d <- subset(d, SampleType %in% c("CD14_MET", "CD14_PBS"))
-gene.name <- "RP11-180K7.1"
+gene.name <- "RP11-160E2.11"
 ggplot(d, aes(x=SampleType, y=count, color=Disease,
                                      group=PatientNumber)) + 
-    geom_point() + 
-    scale_y_log10() +
+    geom_point(position=position_dodge(width=0.1)) + 
     theme_bw() +
     geom_line() +
     ylab(gene.name)
@@ -1209,8 +1154,8 @@ fold change, assuming that 1% of genes are DE, is estimated from the data.
 ```{r disease, message=FALSE}
 # design
 disease.dds <- lps.dds
-# 135 samples remaining (19 individuals, 4-8 samples each)
-design(disease.dds) <- ~ Disease
+# 127 samples remaining (18 individuals, 4-8 samples each)
+design(disease.dds) <- ~ BMI + Sex + Disease
 table(disease.dds$SampleType)
 
 # analysis
@@ -1292,7 +1237,7 @@ grid.arrange(grobs=disease.plot.list, ncol=3)
 The specific genes of interest are plotted:
 
 ```{r disease-genes, warning=FALSE}
-g <- which(mcols(disease.dds)$gene_name == "SIRT1")
+g <- which(mcols(disease.dds)$gene_name == "RPL41P1")
 d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
                 intgroup=c("SampleType", "Disease"),
                 returnData=TRUE)
@@ -1301,10 +1246,10 @@ ggplot(d, aes(x=Disease, y=count, color=Disease)) +
   geom_point(size=3) + 
   scale_y_log10() +
   theme_bw() +
-  ylab("SIRT1") +
+  ylab("RPL41P1") +
   facet_wrap(~ SampleType, nrow=2)
 
-g <- which(mcols(disease.dds)$gene_name == "ZNF683")
+g <- which(mcols(disease.dds)$gene_name == "C17orf97")
 d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
                 intgroup=c("SampleType", "Disease"),
                 returnData=TRUE)
@@ -1313,43 +1258,7 @@ ggplot(d, aes(x=Disease, y=count, color=Disease)) +
   geom_point(size=3) + 
   scale_y_log10() +
   theme_bw() +
-  ylab("ZNF683") +
-  facet_wrap(~ SampleType, nrow=2)
-
-g <- which(mcols(disease.dds)$gene_name == "C3AR1")
-d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
-                intgroup=c("SampleType", "Disease"),
-                returnData=TRUE)
-ggplot(d, aes(x=Disease, y=count, color=Disease)) + 
-  geom_boxplot() +
-  geom_point(size=3) + 
-  scale_y_log10() +
-  theme_bw() +
-  ylab("C3AR1") +
-  facet_wrap(~ SampleType, nrow=2)
-
-g <- which(mcols(disease.dds)$gene_name == "MUC20")
-d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
-                intgroup=c("SampleType", "Disease"),
-                returnData=TRUE)
-ggplot(d, aes(x=Disease, y=count, color=Disease)) + 
-  geom_boxplot() +
-  geom_point(size=3) + 
-  scale_y_log10() +
-  theme_bw() +
-  ylab("MUC20") +
-  facet_wrap(~ SampleType, nrow=2)
-
-g <- which(mcols(disease.dds)$gene_name == "SEPT8")
-d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
-                intgroup=c("SampleType", "Disease"),
-                returnData=TRUE)
-ggplot(d, aes(x=Disease, y=count, color=Disease)) + 
-  geom_boxplot() +
-  geom_point(size=3) + 
-  scale_y_log10() +
-  theme_bw() +
-  ylab("SEPT8") +
+  ylab("C17orf97") +
   facet_wrap(~ SampleType, nrow=2)
 
 g <- which(mcols(disease.dds)$gene_name == "TRAPPC6A")
@@ -1364,7 +1273,7 @@ ggplot(d, aes(x=Disease, y=count, color=Disease)) +
   ylab("TRAPPC6A") +
   facet_wrap(~ SampleType, nrow=2)
 
-g <- which(mcols(disease.dds)$gene_name == "LYN")
+g <- which(mcols(disease.dds)$gene_name == "PDPN")
 d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
                 intgroup=c("SampleType", "Disease"),
                 returnData=TRUE)
@@ -1373,7 +1282,7 @@ ggplot(d, aes(x=Disease, y=count, color=Disease)) +
   geom_point(size=3) + 
   scale_y_log10() +
   theme_bw() +
-  ylab("LYN") +
+  ylab("PDPN") +
   facet_wrap(~ SampleType, nrow=2)
 
 g <- which(mcols(disease.dds)$gene_name == "SCD")
@@ -1388,30 +1297,6 @@ ggplot(d, aes(x=Disease, y=count, color=Disease)) +
   ylab("SCD") +
   facet_wrap(~ SampleType, nrow=2)
 
-g <- which(mcols(disease.dds)$gene_name == "RAB15")
-d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
-                intgroup=c("SampleType", "Disease"),
-                returnData=TRUE)
-ggplot(d, aes(x=Disease, y=count, color=Disease)) + 
-  geom_boxplot() +
-  geom_point(size=3) + 
-  scale_y_log10() +
-  theme_bw() +
-  ylab("RAB15") +
-  facet_wrap(~ SampleType, nrow=2)
-
-g <- which(mcols(disease.dds)$gene_name == "AC008268.2")
-d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
-                intgroup=c("SampleType", "Disease"),
-                returnData=TRUE)
-ggplot(d, aes(x=Disease, y=count, color=Disease)) + 
-  geom_boxplot() +
-  geom_point(size=3) + 
-  scale_y_log10() +
-  theme_bw() +
-  ylab("AC008268.2") +
-  facet_wrap(~ SampleType, nrow=2)
-
 g <- which(mcols(disease.dds)$gene_name == "TPRG1")
 d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
                 intgroup=c("SampleType", "Disease"),
@@ -1424,7 +1309,7 @@ ggplot(d, aes(x=Disease, y=count, color=Disease)) +
   ylab("TPRG1") +
   facet_wrap(~ SampleType, nrow=2)
 
-g <- which(mcols(disease.dds)$gene_name == "ITGB1")
+g <- which(mcols(disease.dds)$gene_name == "LYN")
 d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
                 intgroup=c("SampleType", "Disease"),
                 returnData=TRUE)
@@ -1433,10 +1318,10 @@ ggplot(d, aes(x=Disease, y=count, color=Disease)) +
   geom_point(size=3) + 
   scale_y_log10() +
   theme_bw() +
-  ylab("ITGB1") +
+  ylab("LYN") +
   facet_wrap(~ SampleType, nrow=2)
 
-g <- which(mcols(disease.dds)$gene_name == "ASNS")
+g <- which(mcols(disease.dds)$gene_name == "AC008268.2")
 d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
                 intgroup=c("SampleType", "Disease"),
                 returnData=TRUE)
@@ -1445,96 +1330,7 @@ ggplot(d, aes(x=Disease, y=count, color=Disease)) +
   geom_point(size=3) + 
   scale_y_log10() +
   theme_bw() +
-  ylab("ASNS") +
-  facet_wrap(~ SampleType, nrow=2)
-
-g <- which(mcols(disease.dds)$gene_name == "KIAA1671")
-d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
-                intgroup=c("SampleType", "Disease"),
-                returnData=TRUE)
-ggplot(d, aes(x=Disease, y=count, color=Disease)) + 
-  geom_boxplot() +
-  geom_point(size=3) + 
-  scale_y_log10() +
-  theme_bw() +
-  ylab("KIAA1671") +
-  facet_wrap(~ SampleType, nrow=2)
-
-g <- which(mcols(disease.dds)$gene_name == "TRGV5")
-d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
-                intgroup=c("SampleType", "Disease"),
-                returnData=TRUE)
-ggplot(d, aes(x=Disease, y=count, color=Disease)) + 
-  geom_boxplot() +
-  geom_point(size=3) + 
-  scale_y_log10() +
-  theme_bw() +
-  ylab("TRGV5") +
-  facet_wrap(~ SampleType, nrow=2)
-```
-
-This analysis is repeated accounting for BMI in the model.
-
-
-```{r disease-bmi, message=FALSE}
-# design
-disease.dds <- lps.dds
-# 135 samples remaining (19 individuals, 4-8 samples each)
-design(disease.dds) <- ~ BMI + Disease
-table(disease.dds$SampleType)
-
-# analysis
-disease.res.list <- list()
-disease.plot.list <- list()
-
-for(i in 1:8){
-  cell.type <- levels(disease.dds$SampleType)[i]
-  print(cell.type)
-  sub.dis.dds <- disease.dds[, disease.dds$SampleType == cell.type]
-  sub.dis.dds@colData <- droplevels(sub.dis.dds@colData)
-  keep <- rowSums(counts(sub.dis.dds)) >= 10
-  sub.dis.dds <- sub.dis.dds[keep,]
-  sub.dis.dds
-  sub.dis.dds <- DESeq(sub.dis.dds)
-  disease.res <- results(sub.dis.dds, 
-                   independentFiltering=TRUE, alpha=0.05)
-  disease.res$Gene <- mcols(sub.dis.dds)$gene_name
-  disease.res.LFC <- lfcShrink(sub.dis.dds, 
-                               coef=length(resultsNames(sub.dis.dds)))
-  disease.res$log2FoldChange <- disease.res.LFC$log2FoldChange
-  disease.res$lfcSE <- disease.res.LFC$lfcSE
-  
-  diseaseresOrdered <- disease.res[order(disease.res$padj), ]
-  diseaseresOrdered <- diseaseresOrdered[(complete.cases(diseaseresOrdered)), ]
-  disease.res.list[[i]] <- diseaseresOrdered
-  summary(diseaseresOrdered)
-  
-  diseaseresOrdered$sig <- ifelse((diseaseresOrdered$padj < 0.05), 
-                          "Sig DE", "Not Sig")
-  disease.plot.list[[i]] <- ggplot(data.frame(diseaseresOrdered),
-                                   aes(log2FoldChange, -log10(padj))) +
-    geom_point(aes(col=sig)) +
-    scale_color_manual(values=c("grey", "red")) +
-    theme_bw() +
-    ggtitle(cell.type) +
-    geom_text_repel(data=subset(data.frame(diseaseresOrdered), sig == "Sig DE"),
-                    aes(label=Gene))
-}
-
-grid.arrange(grobs=disease.plot.list, ncol=3)
-```
-
-```{r disease-genes-bmi, warning=FALSE}
-g <- which(mcols(disease.dds)$gene_name == "SIRT1")
-d <- plotCounts(disease.dds, gene=g, replaced=TRUE,
-                intgroup=c("SampleType", "Disease", "BMI"),
-                returnData=TRUE)
-ggplot(d, aes(x=Disease, y=count, color=BMI)) + 
-  geom_boxplot() +
-  geom_point(size=3) + 
-  scale_y_log10() +
-  theme_bw() +
-  ylab("SIRT1") +
+  ylab("AC008268.2") +
   facet_wrap(~ SampleType, nrow=2)
 ```
 
@@ -1553,7 +1349,7 @@ to.rm <- c("86_CD14_LPS",
            "115_CD14_MET_LPS", "115_CD14_PBS", "115_CD14_MET",
            "115_CD14_LPS")
 repeat.dds <- repeat.dds[, !(repeat.dds$SampleNameFull %in% to.rm)]
-# 112 samples remaining (7 individuals, 16 samples each)
+# 102 samples remaining (7 individuals, 16 samples each)
 repeat.dds$PatientNumber <- as.factor(repeat.dds$PatientNumber)
 repeat.dds@colData <- droplevels(repeat.dds@colData)
 design(repeat.dds) <- ~ PatientNumber + Repeat.Sample
@@ -1597,7 +1393,7 @@ print(repeat.plot.list[[3]])
 print(repeat.plot.list[[4]])
 ```
 
-The single gene that is strongly significant in CD14_MET is shown. It encodes a 
+The gene that is strongly significant in CD14_MET is shown. It encodes a 
 predicted transmembrane protein 
 
 ```{r repeat-genes-cd14met, warning=FALSE}
@@ -1608,7 +1404,7 @@ d <- plotCounts(repeat.dds, gene=g, replaced=TRUE,
                 returnData=TRUE)
 ggplot(d, aes(x=Repeat.Sample, y=count, color=Disease, group=PatientNumber)) + 
   geom_point(size=3) + 
-  scale_y_log10() +
+  #scale_y_log10() +
   theme_bw() +
   geom_line() +
   ylab("TMEM185A") +
@@ -1622,11 +1418,138 @@ eTerm_repeat_GOBP_lea <- xEnricherGenes(data=data, background=background,
                                       ontology="GOBP",
                                       ontology.algorithm="lea",
                                      RData.location=RData.location,
-                                     verbose=FALSE)
+                                     verbose=TRUE)
 bp_repeat_GOBP_lea <- xEnrichBarplot(eTerm_repeat_GOBP_lea,
                                    displayBy="fdr", top_num=10)
 bp_repeat_GOBP_lea
 ```
+
+The effect of metformin treatment was explored by adding an interaction term to 
+this analysis
+
+```{r metformin-treatment}
+repeat.dds$Metformin. <- as.factor(repeat.dds$Metformin.)
+repeat.res.list <- list()
+repeat.plot.list <- list()
+
+for(i in 1:8){
+  cell.type <- levels(repeat.dds$SampleType)[i]
+  print(cell.type)
+  sub.rep.dds <- repeat.dds[, repeat.dds$SampleType == cell.type]
+  sub.rep.dds@colData <- droplevels(sub.rep.dds@colData)
+  
+  tmp <- cbind(sub.rep.dds$Metformin., sub.rep.dds$PatientNumber)
+  # 10 patients in control, 9 in disease
+  # update disease to 1:9 and control 1:10
+  ind.n <- tmp[, 2]
+  ind.n[which(tmp[, 1] == 1)] <- as.numeric(as.factor(ind.n[which(tmp[, 1] == 1)]))
+  ind.n[which(tmp[, 1] == 2)] <- as.numeric(as.factor(ind.n[which(tmp[, 1] == 2)]))
+
+  sub.rep.dds$ind.n <- as.factor(as.character(ind.n))
+  design(sub.rep.dds) <- ~ Metformin. + Metformin.:ind.n + Metformin.:Repeat.Sample
+  m1 <- model.matrix(design(sub.rep.dds), sub.rep.dds@colData)
+  all.zero <- colSums(m1) == 0
+  idx <- which(all.zero)
+  m1 <- m1[, -idx]  
+  
+  sub.rep.dds <- DESeq(sub.rep.dds, full=m1, betaPrior=FALSE)
+  repeat.res <- results(sub.rep.dds, 
+                   independentFiltering=TRUE, alpha=0.05)
+  repeat.res$Gene <- mcols(repeat.dds)$gene_name
+  repeat.res.LFC <- lfcShrink(sub.rep.dds, coef=length(resultsNames(sub.rep.dds)))
+  repeat.res$log2FoldChange <- repeat.res.LFC$log2FoldChange
+  repeat.res$lfcSE <- repeat.res.LFC$lfcSE
+  repeatresOrdered <- repeat.res[order(repeat.res$padj), ]
+  repeatresOrdered <- repeatresOrdered[(complete.cases(repeatresOrdered)), ]
+  repeatresOrdered$sig <- ifelse((repeatresOrdered$padj < 0.05 & 
+                            abs(repeatresOrdered$log2FoldChange) >= log(1.5, 2)), 
+                          "Sig DE", "Not Sig")
+  repeat.res.list[[i]] <- repeatresOrdered
+  summary(repeatresOrdered)
+  
+  repeat.plot.list[[i]] <- ggplot(data.frame(repeatresOrdered),
+                                   aes(log2FoldChange, -log10(padj))) +
+    geom_point(aes(col=sig)) +
+    scale_color_manual(values=c("grey", "red")) +
+    theme_bw() +
+    ggtitle(cell.type) +
+    geom_text_repel(data=subset(data.frame(repeatresOrdered), sig == "Sig DE"),
+                    aes(label=Gene))
+}
+
+grid.arrange(grobs=repeat.plot.list, ncol=3)
+
+g <- which(mcols(repeat.dds)$gene_name == "CTD-2031P19.4")
+d <- plotCounts(repeat.dds, gene=g, replaced=TRUE,
+                intgroup=c("SampleType", "Disease", "Repeat.Sample", "Metformin.",
+                           "PatientNumber"),
+                returnData=TRUE)
+ggplot(subset(d, SampleType == "CD14_MET"), 
+       aes(x=Repeat.Sample, y=count, group=PatientNumber, colour=Disease)) + 
+  facet_grid(~ Metformin.) +
+  geom_line() +
+  geom_point(size=3) + 
+  theme_bw() +
+  ylab("CTD-2031P19.4")
+
+
+g <- which(mcols(repeat.dds)$gene_name == "IGLC3")
+d <- plotCounts(repeat.dds, gene=g, replaced=TRUE,
+                intgroup=c("SampleType", "Disease", "Repeat.Sample", "Metformin.",
+                           "PatientNumber"),
+                returnData=TRUE)
+ggplot(subset(d, SampleType == "Paxgene"), 
+       aes(x=Repeat.Sample, y=count, group=PatientNumber, colour=Disease)) + 
+  facet_grid(~ Metformin.) +
+  geom_line() +
+  geom_point(size=3) + 
+  theme_bw() +
+  ylab("IGLC3")
+
+g <- which(mcols(repeat.dds)$gene_name == "IGLC2")
+d <- plotCounts(repeat.dds, gene=g, replaced=TRUE,
+                intgroup=c("SampleType", "Disease", "Repeat.Sample", "Metformin.",
+                           "PatientNumber"),
+                returnData=TRUE)
+ggplot(subset(d, SampleType == "Paxgene"), 
+       aes(x=Repeat.Sample, y=count, group=PatientNumber, colour=Disease)) + 
+  facet_grid(~ Metformin.) +
+  geom_line() +
+  geom_point(size=3) + 
+  theme_bw() +
+  ylab("IGLC2")
+
+g <- which(mcols(repeat.dds)$gene_name == "ANK1")
+d <- plotCounts(repeat.dds, gene=g, replaced=TRUE,
+                intgroup=c("SampleType", "Disease", "Repeat.Sample", "Metformin.",
+                           "PatientNumber"),
+                returnData=TRUE)
+ggplot(subset(d, SampleType == "Paxgene"), 
+       aes(x=Repeat.Sample, y=count, group=PatientNumber, colour=Disease)) + 
+  facet_grid(~ Metformin.) +
+  geom_line() +
+  geom_point(size=3) + 
+  theme_bw() +
+  ylab("ANK1")
+
+g <- which(mcols(repeat.dds)$gene_name == "MZB1")
+d <- plotCounts(repeat.dds, gene=g, replaced=TRUE,
+                intgroup=c("SampleType", "Disease", "Repeat.Sample", "Metformin.",
+                           "PatientNumber"),
+                returnData=TRUE)
+ggplot(subset(d, SampleType == "Paxgene"), 
+       aes(x=Repeat.Sample, y=count, group=PatientNumber, colour=Disease)) + 
+  facet_grid(~ Metformin.) +
+  geom_line() +
+  geom_point(size=3) + 
+  theme_bw() +
+  ylab("MZB1")
+```
+
+
+
+
+
 
 ### CD14 vs CD8
 
@@ -1707,7 +1630,7 @@ bp_pp_GOBP_lea <- xEnrichBarplot(eTerm_pp_GOBP_lea,
 bp_pp_GOBP_lea
 ```
 
-### Modifying effect of age and BMI
+### Quantitative traits
 
 Looking at BMI in each cell type finds no differentially expressed genes. 
 
@@ -1794,4 +1717,59 @@ for(i in 1:8){
 }
 
 grid.arrange(grobs=bmi.plot.list, ncol=3)
+```
+
+
+
+
+
+
+```{r glucose, message=FALSE}
+# design
+glu.dds <- lps.dds
+# 152 samples remaining (19 individuals, 8 samples each)
+design(glu.dds) <- ~ Glucose..mmol.l..Consent..FG.sheet.
+
+# analysis
+glu.res.list <- list()
+glu.plot.list <- list()
+
+for(i in 1:8){
+  cell.type <- levels(glu.dds$SampleType)[i]
+  print(cell.type)
+  sub.glu.dds <- glu.dds[, glu.dds$SampleType == cell.type]
+  sub.glu.dds@colData <- droplevels(sub.glu.dds@colData)
+  sub.glu.dds <- DESeq(sub.glu.dds)
+  glu.res <- results(sub.glu.dds, 
+                   independentFiltering=TRUE, alpha=0.05)
+  glu.res$Gene <- mcols(glu.dds)$gene_name
+  glu.res.LFC <- lfcShrink(sub.glu.dds, coef=length(resultsNames(sub.glu.dds)))
+  glu.res$log2FoldChange <- glu.res.LFC$log2FoldChange
+  glu.res$lfcSE <- glu.res.LFC$lfcSE
+  gluresOrdered <- glu.res[order(glu.res$padj), ]
+  gluresOrdered <- gluresOrdered[(complete.cases(gluresOrdered)), ]
+  glu.res.list[[i]] <- gluresOrdered
+  summary(gluresOrdered)
+  
+  gluresOrdered$sig <- ifelse((gluresOrdered$padj < 0.05), 
+                          "Sig DE", "Not Sig")
+  glu.plot.list[[i]] <- ggplot(data.frame(gluresOrdered),
+                                   aes(log2FoldChange, -log10(padj))) +
+    geom_point(aes(col=sig)) +
+    scale_color_manual(values=c("grey", "red")) +
+    theme_bw() +
+    ggtitle(cell.type) +
+    geom_text_repel(data=subset(data.frame(gluresOrdered), sig == "Sig DE"),
+                    aes(label=Gene))
+}
+
+grid.arrange(grobs=glu.plot.list, ncol=3)
+plot(glu.plot.list[[1]])
+plot(glu.plot.list[[2]])
+plot(glu.plot.list[[3]])
+plot(glu.plot.list[[4]])
+plot(glu.plot.list[[5]])
+plot(glu.plot.list[[6]])
+plot(glu.plot.list[[7]])
+plot(glu.plot.list[[8]])
 ```
